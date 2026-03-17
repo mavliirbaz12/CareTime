@@ -1,54 +1,116 @@
-# TimeTrack Pro
+# CareVance HRMS
 
-TimeTrack Pro is a Laravel 12 API with a React 18 frontend and an optional Electron desktop shell for timer capture, screenshots, and desktop activity context.
+CareVance HRMS is a full-stack workforce management platform built with a Laravel API, a React web app, and an optional Electron desktop tracker. It combines HR, attendance, time tracking, productivity monitoring, payroll, reporting, communication, and onboarding flows in one workspace-oriented product.
 
-## Stack
+## Core Modules
+
+- Workspace owner signup, trial onboarding, and invitation-based employee onboarding
+- Employee management, roles, teams, report groups, and organization settings
+- Attendance tracking with check-in/check-out, late tracking, leave requests, and time edit approvals
+- Time tracking with projects, tasks, active timers, and today/active time entry APIs
+- Productivity monitoring with screenshots, activity context, and desktop companion support
+- Reports workspace for attendance, productivity, timelines, exports, hours tracked, and employee insights
+- Payroll with structures, payroll records, payouts, payslips, and PDF generation
+- Team chat with direct conversations, group chat, typing status, read state, and attachments
+- Notifications, audit logs, billing views, invoices, and company/workspace APIs
+
+## Tech Stack
 
 ### Backend
+
 - Laravel 12
 - PHP 8.2+
-- Token auth via the `personal_access_tokens` table and custom API middleware
-- Default queue connection: `database`
-- Private file storage for screenshots and chat attachments
+- PostgreSQL-first configuration
+- Custom bearer-token authentication using `personal_access_tokens`
+- Laravel Mail for invite delivery
+- Queue-ready invitation and mail flow
+- Dompdf for payslip PDF generation
+- Stripe-ready payroll payment integration hooks
 
 ### Frontend
-- React 18 + TypeScript
+
+- React 18
+- TypeScript
 - Vite 5
 - Tailwind CSS 3
+- TanStack React Query 5
 - React Router 6
 - Axios
-- TanStack React Query 5
+- Framer Motion
+- Lucide React
 
 ### Desktop
+
 - Electron 33
-- `active-win` for active window context
+- `active-win` for active window tracking
+- Electron Builder for Windows packaging
+
+### Deployment
+
+- Dockerfiles for frontend and backend
+- Nginx-based frontend container setup
+- Render Blueprint via `render.yaml`
+
 ## Repository Structure
 
 ```text
-demo_laravel_2/
-  backend/                 Laravel API
-  frontend/                React app
-  desktop/                 Electron shell
+CareVance/
+  backend/     Laravel 12 API
+  frontend/    React + TypeScript web app
+  desktop/     Electron desktop tracker
+  README.md
   SPEC.md
   TODO.md
-  README.md
+  render.yaml
 ```
 
-## Backend Setup
+## Quick Start
+
+### 1. Backend
 
 ```bash
 cd backend
 composer install
 copy .env.example .env
 php artisan key:generate
+php artisan migrate
+php artisan serve --host=127.0.0.1 --port=8000
 ```
 
-Update `backend/.env` for your environment. The default example is PostgreSQL-based:
+Optional queue worker when you are not using `QUEUE_CONNECTION=sync`:
+
+```bash
+php artisan queue:listen --tries=1 --timeout=0
+```
+
+### 2. Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+In local development, the frontend now defaults to `/api` and can use Vite's dev proxy. For deployed environments, set `VITE_API_URL` explicitly.
+
+### 3. Desktop Tracker
+
+```bash
+cd desktop
+npm install
+npm start
+```
+
+If `APP_URL` is not set, the desktop shell opens the local frontend by default.
+
+## Important Environment Variables
+
+### Backend
 
 ```env
-APP_NAME="TimeTrack Pro"
+APP_NAME="CareVance"
 APP_URL=http://localhost:8000
-CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+FRONTEND_URL=http://localhost:5173
 
 DB_CONNECTION=pgsql
 DB_HOST=127.0.0.1
@@ -57,259 +119,128 @@ DB_DATABASE=timetrackpro
 DB_USERNAME=postgres
 DB_PASSWORD=your_password
 
-QUEUE_CONNECTION=database
+QUEUE_CONNECTION=sync
 SESSION_DRIVER=database
 CACHE_STORE=database
 FILESYSTEM_DISK=local
-API_TOKEN_TTL_MINUTES=10080
-```
 
-Run the required bootstrap commands:
-
-```bash
-php artisan migrate
-```
-
-Start the API:
-
-```bash
-php artisan serve
-```
-
-Queue processing:
-
-```bash
-php artisan queue:listen --tries=1 --timeout=0
-```
-
-Notes:
-- `storage:link` is not required for screenshots or chat attachments.
-- The repo uses the database queue driver by default. The migrations already include the `jobs` table, but Redis is the better production target for queue and cache.
-- No broadcasting server setup is required for the current codebase.
-
-## Workspace Onboarding And Invitations
-
-The app now supports two distinct signup paths:
-
-- Workspace owner signup: `/signup-owner` and `/start-trial`
-- Invite acceptance: `/accept-invite/:token`
-
-Owner signup creates the workspace, first admin, selected plan code, and billing state in one flow. Employees, managers, admins, and clients should join later through invitation links generated by an authorized workspace admin.
-
-Relevant API endpoints:
-
-- `POST /api/auth/signup-owner`
-- `POST /api/invitations`
-- `GET /api/invitations/{token}`
-- `POST /api/invitations/{token}/accept`
-- `GET /api/billing/current`
-- `GET /api/me/company`
-
-## SMTP For Invitation Emails
-
-Invitation emails use Laravel Mail and are queue-ready. For local or production SMTP delivery, set these backend env values:
-
-```env
 MAIL_MAILER=smtp
-MAIL_HOST=smtp.mailprovider.com
+MAIL_HOST=smtp-relay.brevo.com
 MAIL_PORT=587
-MAIL_SCHEME=tls
-MAIL_USERNAME=your_smtp_user
+MAIL_USERNAME=your_smtp_username
 MAIL_PASSWORD=your_smtp_password
-MAIL_FROM_ADDRESS=hello@your-domain.com
-MAIL_FROM_NAME="${APP_NAME}"
-FRONTEND_APP_URL=https://your-frontend-domain.com
-QUEUE_CONNECTION=database
+MAIL_FROM_ADDRESS=your_sender_email
+MAIL_FROM_NAME="CareVance HRMS"
 ```
 
-Then run a worker so queued invitation mail can be delivered:
+Other important groups:
 
-```bash
-php artisan queue:listen --tries=1 --timeout=0
-```
+- `CORS_ALLOWED_*`
+- `API_TOKEN_TTL_MINUTES`
+- `RATE_LIMIT_*`
+- `DESKTOP_WINDOWS_DOWNLOAD_URL`
+- `ATTENDANCE_*`
+- `PAYROLL_*`
+- `STRIPE_*`
 
-## Frontend Setup
-
-```bash
-cd frontend
-npm install
-copy .env.example .env
-```
-
-Recommended `frontend/.env` values for local development:
-
-```env
-VITE_API_URL=http://localhost:8000/api
-VITE_WEB_APP_URL=http://localhost:5173
-# Optional: overrides the backend-powered installer download endpoint
-# VITE_DESKTOP_DOWNLOAD_URL=http://localhost:8000/api/downloads/desktop/windows
-VITE_DESKTOP_DOWNLOAD_LABEL=Download for Windows
-```
-
-Start the frontend:
-
-```bash
-npm run dev
-```
-
-## Desktop Setup
-
-```bash
-cd desktop
-npm install
-npm start
-```
-
-The desktop shell reads the target web app URL from the `APP_URL` process environment variable. If it is not set, it opens:
-
-```text
-http://localhost:5173
-```
-
-To point the desktop app at another frontend during the current shell session:
-
-```powershell
-$env:APP_URL="http://localhost:5173"
-npm start
-```
-
-## Shared/Deployed Setup
-
-Backend example:
-
-```env
-APP_URL=https://your-backend-domain.com
-CORS_ALLOWED_ORIGINS=https://your-frontend-domain.com
-API_TOKEN_TTL_MINUTES=10080
-SESSION_SECURE_COOKIE=true
-QUEUE_CONNECTION=redis
-CACHE_STORE=redis
-DESKTOP_WINDOWS_DOWNLOAD_URL=https://github.com/<owner>/<repo>/releases/latest/download/TimeTrack%20Pro-Setup-1.0.0-x64.exe
-PAYROLL_STRIPE_RETURN_URL=https://your-frontend-domain.com/payroll
-PAYROLL_STRIPE_SUCCESS_URL=https://your-frontend-domain.com/payroll?payment=success
-PAYROLL_STRIPE_CANCEL_URL=https://your-frontend-domain.com/payroll?payment=cancelled
-```
-
-Frontend example:
+### Frontend
 
 ```env
 VITE_API_URL=https://your-backend-domain.com/api
 VITE_WEB_APP_URL=https://your-frontend-domain.com
+VITE_DESKTOP_DOWNLOAD_URL=https://your-backend-domain.com/api/downloads/desktop/windows
+VITE_DESKTOP_DOWNLOAD_LABEL=Download for Windows
 ```
-
-The frontend now ships with a production Nginx config and Dockerfile in [`frontend/Dockerfile`](/d:/demo_laravel_2/frontend/Dockerfile). That setup keeps clean React Router URLs working on refresh with:
-
-```nginx
-try_files $uri $uri/ /index.html;
-```
-
-It also injects frontend env vars at runtime through [`env-config.js`](/d:/demo_laravel_2/frontend/public/env-config.js), so the same image can be promoted across environments without rebuilding.
-
-## Render Deploy
-
-This repo now includes a Render Blueprint at [`render.yaml`](/d:/demo_laravel_2/render.yaml).
-
-It now uses Docker for both services so the frontend is served by Nginx with SPA fallback instead of depending on static-host rewrite behavior.
-
-Use it like this:
-
-1. In Render, create a new Blueprint and point it at this repo.
-2. Let Render create:
-   - `carevance-frontend` as a Docker Web Service
-   - `carevance-backend` as a Docker Web Service
-3. Enter the prompted values:
-
-Frontend:
-
-```env
-VITE_API_URL=https://YOUR-BACKEND.onrender.com/api
-VITE_WEB_APP_URL=https://YOUR-FRONTEND.onrender.com
-VITE_DESKTOP_DOWNLOAD_URL=https://YOUR-BACKEND.onrender.com/api/downloads/desktop/windows
-```
-
-Backend:
-
-```env
-APP_URL=https://YOUR-BACKEND.onrender.com
-CORS_ALLOWED_ORIGINS=https://YOUR-FRONTEND.onrender.com
-DB_HOST=YOUR_RENDER_POSTGRES_HOST
-DB_DATABASE=YOUR_RENDER_POSTGRES_DB
-DB_USERNAME=YOUR_RENDER_POSTGRES_USER
-DB_PASSWORD=YOUR_RENDER_POSTGRES_PASSWORD
-DESKTOP_WINDOWS_DOWNLOAD_URL=https://github.com/<owner>/<repo>/releases/latest/download/CareVance-Setup-1.0.0-x64.exe
-PAYROLL_STRIPE_RETURN_URL=https://YOUR-FRONTEND.onrender.com/payroll
-PAYROLL_STRIPE_SUCCESS_URL=https://YOUR-FRONTEND.onrender.com/payroll?payment=success
-PAYROLL_STRIPE_CANCEL_URL=https://YOUR-FRONTEND.onrender.com/payroll?payment=cancelled
-```
-
-If you deploy the frontend manually on AWS, ECS, EC2, or another container platform, use the same [`frontend/Dockerfile`](/d:/demo_laravel_2/frontend/Dockerfile) and pass the same `VITE_*` env vars at container runtime. The included Nginx config handles `/dashboard`, `/payroll`, and the rest of the app on hard refresh without hash routes or host-specific rewrite hacks.
-
-Desktop example:
-
-```powershell
-$env:APP_URL="https://your-frontend-domain.com"
-npm start
-```
-
-Installer download behavior:
-- Frontend pages default to `VITE_API_URL` without `/api`, then call `/api/downloads/desktop/windows`.
-- Backend serves that endpoint by streaming the file behind `DESKTOP_WINDOWS_DOWNLOAD_URL`.
-- `VITE_DESKTOP_DOWNLOAD_URL` is only an optional frontend override.
-
-## Environment Variables In Use
-
-### Backend
-- `APP_NAME`
-- `APP_URL`
-- `CORS_ALLOWED_ORIGINS`
-- `DB_*`
-- `QUEUE_CONNECTION`
-- `SESSION_DRIVER`
-- `CACHE_STORE`
-- `FILESYSTEM_DISK`
-- `API_TOKEN_TTL_MINUTES`
-- `SCREENSHOT_URL_TTL_MINUTES`
-- `RATE_LIMIT_*`
-- `DESKTOP_WINDOWS_DOWNLOAD_URL`
-- `ATTENDANCE_LATE_AFTER`
-- `ATTENDANCE_SHIFT_SECONDS`
-- `PAYROLL_*`
-- `STRIPE_SECRET_KEY`
-- `STRIPE_WEBHOOK_SECRET`
-
-### Frontend
-- `VITE_API_URL`
-- `VITE_WEB_APP_URL`
-- `VITE_DESKTOP_DOWNLOAD_URL`
-- `VITE_DESKTOP_DOWNLOAD_LABEL`
 
 ### Desktop
-- `APP_URL`
 
-## Operational Notes
+```env
+APP_URL=https://your-frontend-domain.com
+```
 
-- `backend/.env.example` is aligned to the app's PostgreSQL-first setup and keeps permissive CORS scoped to localhost only.
-- The app uses a custom bearer-token middleware, not Laravel Sanctum middleware.
-- The desktop shell already supports opening web pages externally and desktop-only tracker APIs through `preload.cjs`.
-- The `/team` route redirects to `/user-management`.
+## Authentication And Invitation Flow
 
-## Validation Commands
+CareVance supports two main onboarding paths:
+
+- Workspace owner signup via `POST /api/auth/signup-owner`
+- Invitation acceptance via `POST /api/invitations`, `GET /api/invitations/{token}`, and `POST /api/invitations/{token}/accept`
+
+Current invite emails point users to:
+
+- `/accept-invite/:token`
+
+That flow locks the invited email and assigned role on the backend and creates the user account only when the invited user completes the accept form.
+
+## Main Product Areas
+
+### Admin / HR
+
+- Workspace signup and subscription state
+- Employee directory and profile 360 views
+- Roles, groups, and invitations
+- Audit logs
+- Notifications publishing
+- Billing summary
+
+### Workforce Operations
+
+- Attendance dashboard
+- Leave management
+- Time edit approval flows
+- Time tracking and task/project assignment
+- Productivity and screenshot monitoring
+- Reports and exports
+
+### Finance
+
+- Payroll structures
+- Payroll record generation
+- Mock and Stripe-ready payout flow
+- Payslips and PDF downloads
+- Invoices and payment state changes
+
+### Collaboration
+
+- Direct chat
+- Group chat
+- Typing indicators
+- Attachment delivery
+- Notification center
+
+## Deployment Notes
+
+- `frontend/Dockerfile` builds and serves the SPA with Nginx
+- `frontend/public/env-config.js` supports runtime frontend config injection
+- `render.yaml` provisions both `carevance-frontend` and `carevance-backend`
+- Backend health check is `/`
+- Frontend health check is `/health`
+
+## Useful Commands
+
+### Backend
 
 ```bash
 cd backend
 php artisan test
 ```
 
+### Frontend
+
 ```bash
 cd frontend
 npm run build
 ```
+
+### Desktop
 
 ```bash
 cd desktop
 npm run dist:win
 ```
 
-## License
+## Notes
 
-Commercial - all rights reserved.
+- The API uses custom bearer-token middleware instead of Sanctum middleware wiring.
+- Screenshots and chat attachments are served through authenticated or signed access paths.
+- Invitation mail supports direct send or queued delivery depending on `QUEUE_CONNECTION`.
+- The repo contains both current invitation flow (`/accept-invite/:token`) and a legacy invite flow used by older endpoints.
