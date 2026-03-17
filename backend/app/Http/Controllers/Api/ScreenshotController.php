@@ -1,0 +1,315 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\Screenshot;
+use App\Models\TimeEntry;
+use App\Models\User;
+use App\Services\Audit\AuditLogService;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+
+class ScreenshotController extends Controller
+{
+    public function __construct(private readonly AuditLogService $auditLogService)
+    {
+    }
+
+    private function canViewAll(?User $user): bool
+    {
+        return $user && in_array($user->role, ['admin', 'manager'], true);
+    }
+
+    /**
+     * Display a listing of the resource.
+     */
+    public function index(Request $request)
+    {
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['data' => []]);
+        }
+
+        $screenshots = $this->scopedScreenshotsQuery($request, $user)
+            ->orderBy('created_at', 'desc')
+            ->paginate((int) $request->get('per_page', 15));
+
+        return response()->json($screenshots);
+    }
+
+    public function bulkDestroy(Request $request)
+    {
+        $validated = $request->validate([
+            'screenshot_ids' => 'nullable|array',
+            'screenshot_ids.*' => 'integer',
+            'user_id' => 'nullable|integer',
+            'time_entry_id' => 'nullable|integer',
+            'start_date' => 'nullable|date',
+            'end_date' => 'nullable|date',
+            'delete_all_in_range' => 'nullable|boolean',
+        ]);
+
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $selectedIds = collect($validated['screenshot_ids'] ?? [])
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->unique()
+            ->values();
+        $deleteAllInRange = (bool) ($validated['delete_all_in_range'] ?? false);
+
+        if ($selectedIds->isEmpty() && !$deleteAllInRange) {
+            return response()->json(['message' => 'Select screenshots to delete or request range deletion.'], 422);
+        }
+
+        if ($deleteAllInRange && !$request->filled('user_id') && !$request->filled('time_entry_id') && !$request->filled('start_date') && !$request->filled('end_date')) {
+            return response()->json(['message' => 'Range deletion requires at least one filter.'], 422);
+        }
+
+        $query = $this->scopedScreenshotsQuery($request, $user)->orderBy('created_at', 'desc');
+
+        if ($selectedIds->isNotEmpty()) {
+            $query->whereIn('id', $selectedIds);
+        }
+
+        $screenshots = $query->get();
+        if ($screenshots->isEmpty()) {
+            return response()->json([
+                'message' => 'No screenshots matched the deletion request.',
+                'deleted_count' => 0,
+            ]);
+        }
+
+        $deletedIds = [];
+        $deletedUserIds = [];
+
+        foreach ($screenshots as $screenshot) {
+            $screenshot->loadMissing('timeEntry.user');
+            $deletedIds[] = (int) $screenshot->id;
+            if ($screenshot->timeEntry?->user_id) {
+                $deletedUserIds[] = (int) $screenshot->timeEntry->user_id;
+            }
+
+            Storage::disk('screenshots')->delete(basename((string) $screenshot->filename));
+            $screenshot->delete();
+        }
+
+        $this->auditLogService->log(
+            action: 'screenshot.bulk_deleted',
+            actor: $user,
+            target: 'Screenshot',
+            metadata: [
+                'deleted_count' => count($deletedIds),
+                'screenshot_ids' => $deletedIds,
+                'user_ids' => array_values(array_unique($deletedUserIds)),
+                'delete_all_in_range' => $deleteAllInRange,
+                'filters' => [
+                    'user_id' => $validated['user_id'] ?? null,
+                    'time_entry_id' => $validated['time_entry_id'] ?? null,
+                    'start_date' => $validated['start_date'] ?? null,
+                    'end_date' => $validated['end_date'] ?? null,
+                ],
+            ],
+            request: $request
+        );
+
+        return response()->json([
+            'message' => count($deletedIds) === 1 ? 'Screenshot deleted successfully.' : 'Screenshots deleted successfully.',
+            'deleted_count' => count($deletedIds),
+        ]);
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'time_entry_id' => 'required|exists:time_entries,id',
+            'image' => 'nullable|image|max:10240',
+            'filename' => 'nullable|string|max:255',
+            'thumbnail' => 'nullable|string|max:65535',
+            'blurred' => 'nullable|boolean',
+        ]);
+
+        $user = $request->user();
+        if (!$user) {
+            return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+        $timeEntry = TimeEntry::with('user')->find($validated['time_entry_id']);
+        if (!$timeEntry || !$timeEntry->user || $timeEntry->user->organization_id !== $user->organization_id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+        if (!$this->canViewAll($user) && $timeEntry->user_id !== $user->id) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $filename = $validated['filename'] ?? null;
+        if ($request->hasFile('image')) {
+            $path = $request->file('image')->store('', 'screenshots');
+            $filename = basename($path);
+        }
+
+        $filename = $filename ? basename($filename) : null;
+
+        if (!$filename) {
+            return response()->json(['message' => 'Screenshot image or filename is required.'], 422);
+        }
+
+        $screenshot = Screenshot::create([
+            'time_entry_id' => $validated['time_entry_id'],
+            'filename' => $filename,
+            'thumbnail' => $validated['thumbnail'] ?? null,
+            'blurred' => (bool)($validated['blurred'] ?? false),
+        ]);
+
+        $screenshot->loadMissing('timeEntry.user');
+
+        return response()->json($screenshot, 201);
+    }
+
+    public function file(Request $request, Screenshot $screenshot): BinaryFileResponse|\Illuminate\Http\JsonResponse
+    {
+        $path = basename((string) $screenshot->filename);
+
+        if ($path === '' || !$request->hasValidSignature() || !Storage::disk('screenshots')->exists($path)) {
+            return response()->json(['message' => 'Screenshot not found'], 404);
+        }
+
+        $extension = pathinfo($path, PATHINFO_EXTENSION);
+        $downloadName = Str::slug(pathinfo($path, PATHINFO_FILENAME) ?: 'screenshot').($extension ? '.'.$extension : '');
+
+        return response()->file(Storage::disk('screenshots')->path($path), [
+            'Content-Type' => Storage::disk('screenshots')->mimeType($path) ?: 'image/png',
+            'Content-Disposition' => 'inline; filename="'.$downloadName.'"',
+            'Cache-Control' => 'private, max-age=300',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(Screenshot $screenshot)
+    {
+        if (!$this->canAccessScreenshot($screenshot)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $screenshot->loadMissing('timeEntry.user');
+
+        return response()->json($screenshot);
+    }
+
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, Screenshot $screenshot)
+    {
+        if (!$this->canAccessScreenshot($screenshot)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $validated = $request->validate([
+            'thumbnail' => 'nullable|string',
+            'blurred' => 'nullable|boolean',
+        ]);
+
+        $screenshot->update($validated);
+        $screenshot->loadMissing('timeEntry.user');
+
+        return response()->json($screenshot);
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(Screenshot $screenshot)
+    {
+        if (!$this->canAccessScreenshot($screenshot)) {
+            return response()->json(['message' => 'Forbidden'], 403);
+        }
+
+        $screenshot->loadMissing('timeEntry.user');
+        $this->auditLogService->log(
+            action: 'screenshot.deleted',
+            actor: request()->user(),
+            target: $screenshot,
+            metadata: [
+                'time_entry_id' => $screenshot->time_entry_id,
+                'user_id' => $screenshot->timeEntry?->user_id,
+                'recorded_at' => (string) $screenshot->created_at,
+            ],
+            request: request()
+        );
+
+        Storage::disk('screenshots')->delete(basename((string) $screenshot->filename));
+        $screenshot->delete();
+
+        return response()->json(['message' => 'Screenshot deleted successfully']);
+    }
+
+    private function canAccessScreenshot(Screenshot $screenshot): bool
+    {
+        $user = request()->user();
+        if (!$user) {
+            return false;
+        }
+
+        $screenshot->loadMissing('timeEntry.user');
+        if (!$screenshot->timeEntry || !$screenshot->timeEntry->user) {
+            return false;
+        }
+        if ($screenshot->timeEntry->user->organization_id !== $user->organization_id) {
+            return false;
+        }
+        if ($this->canViewAll($user)) {
+            return true;
+        }
+        return $screenshot->timeEntry->user_id === $user->id;
+    }
+
+    private function scopedScreenshotsQuery(Request $request, User $user): Builder
+    {
+        $startDate = $request->filled('start_date')
+            ? Carbon::parse((string) $request->start_date)->startOfDay()
+            : null;
+        $endDate = $request->filled('end_date')
+            ? Carbon::parse((string) $request->end_date)->endOfDay()
+            : null;
+
+        return Screenshot::query()
+            ->with(['timeEntry.user:id,name,email,role'])
+            ->whereHas('timeEntry.user', function ($query) use ($user) {
+                $query->where('organization_id', $user->organization_id);
+            })
+            ->when(!$this->canViewAll($user), function ($query) use ($user) {
+                $query->whereHas('timeEntry', function ($timeEntryQuery) use ($user) {
+                    $timeEntryQuery->where('user_id', $user->id);
+                });
+            })
+            ->when($this->canViewAll($user) && $request->filled('user_id'), function ($query) use ($request) {
+                $userId = (int) $request->user_id;
+                $query->whereHas('timeEntry', function ($timeEntryQuery) use ($userId) {
+                    $timeEntryQuery->where('user_id', $userId);
+                });
+            })
+            ->when($request->filled('time_entry_id'), function ($query) use ($request) {
+                $query->where('time_entry_id', (int) $request->time_entry_id);
+            })
+            ->when($startDate, function ($query) use ($startDate) {
+                $query->where('created_at', '>=', $startDate);
+            })
+            ->when($endDate, function ($query) use ($endDate) {
+                $query->where('created_at', '<=', $endDate);
+            });
+    }
+}
