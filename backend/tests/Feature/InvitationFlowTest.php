@@ -33,7 +33,7 @@ class InvitationFlowTest extends TestCase
             ->assertJsonPath('invitations.0.role', 'employee')
             ->assertJsonPath('invitations.0.mail_delivery', 'sent');
 
-        Mail::assertQueued(CareVanceInvitationMail::class);
+        Mail::assertSent(CareVanceInvitationMail::class);
 
         $inviteUrl = (string) $inviteResponse->json('invitations.0.invite_url');
         $token = basename(parse_url($inviteUrl, PHP_URL_PATH) ?: '');

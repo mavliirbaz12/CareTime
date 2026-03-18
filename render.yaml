@@ -1,31 +1,14 @@
 services:
   - type: web
-    name: carevance-frontend
-    runtime: docker
-    dockerfilePath: ./frontend/Dockerfile
-    dockerContext: ./frontend
-    autoDeployTrigger: commit
-    healthCheckPath: /health
-    envVars:
-      - key: VITE_API_URL
-        sync: false
-      - key: VITE_WEB_APP_URL
-        sync: false
-      - key: VITE_DESKTOP_DOWNLOAD_URL
-        sync: false
-      - key: VITE_DESKTOP_DOWNLOAD_LABEL
-        value: Download for Windows
-
-  - type: web
-    name: carevance-backend
+    name: caretime-backend
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     autoDeployTrigger: commit
-    healthCheckPath: /
+    healthCheckPath: /up
     envVars:
       - key: APP_NAME
-        value: CareVance
+        value: CareTime
       - key: APP_ENV
         value: production
       - key: APP_DEBUG
@@ -34,10 +17,14 @@ services:
         generateValue: true
       - key: APP_URL
         sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: LOG_CHANNEL
+        value: stack
       - key: LOG_STACK
-        value: stderr,daily
+        value: stderr
       - key: LOG_LEVEL
-        value: info
+        value: error
       - key: CORS_ALLOWED_ORIGINS
         sync: false
       - key: CORS_ALLOWED_ORIGIN_PATTERNS
@@ -49,11 +36,11 @@ services:
       - key: API_TOKEN_TTL_MINUTES
         value: "10080"
       - key: SESSION_DRIVER
-        value: database
+        value: file
       - key: SESSION_SECURE_COOKIE
         value: "true"
       - key: CACHE_STORE
-        value: database
+        value: file
       - key: QUEUE_CONNECTION
         value: database
       - key: FILESYSTEM_DISK
@@ -78,6 +65,8 @@ services:
         sync: false
       - key: DB_PORT
         value: "5432"
+      - key: DB_SSLMODE
+        value: require
       - key: DB_DATABASE
         sync: false
       - key: DB_USERNAME

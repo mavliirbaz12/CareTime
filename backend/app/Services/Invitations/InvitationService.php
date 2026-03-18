@@ -214,7 +214,7 @@ class InvitationService
     private function sendInvitationMail(Invitation $invitation, string $token): bool
     {
         try {
-            Mail::to($invitation->email)->queue(
+            Mail::to($invitation->email)->sendNow(
                 new CareVanceInvitationMail(
                     invitation: $invitation->fresh(['organization', 'inviter']),
                     acceptUrl: $this->invitationUrlService->acceptUrl($token),

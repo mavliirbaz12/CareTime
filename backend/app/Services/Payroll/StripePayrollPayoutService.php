@@ -17,8 +17,12 @@ class StripePayrollPayoutService implements PayrollPayoutService
 
         $currency = strtolower((string) config('payroll.default_currency', 'inr'));
         $amountCents = max(1, (int) round(((float) $payroll->net_salary) * 100));
-        $successUrl = (string) config('payroll.stripe_success_url', 'http://localhost:5173/payroll?payment=success');
-        $cancelUrl = (string) config('payroll.stripe_cancel_url', 'http://localhost:5173/payroll?payment=cancelled');
+        $successUrl = (string) config('payroll.stripe_success_url', '');
+        $cancelUrl = (string) config('payroll.stripe_cancel_url', '');
+
+        if ($successUrl === '' || $cancelUrl === '') {
+            throw new RuntimeException('Stripe return URLs are not configured.');
+        }
 
         $request = Http::asForm()
             ->withToken($secret)

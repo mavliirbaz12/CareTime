@@ -2,11 +2,12 @@
 
 $appEnv = (string) env('APP_ENV', 'production');
 $isLocalEnvironment = in_array($appEnv, ['local', 'development', 'testing'], true);
+$frontendUrl = rtrim((string) env('FRONTEND_URL', env('FRONTEND_APP_URL', '')), '/');
 $allowedOrigins = array_values(array_filter(array_map(
     static fn (string $origin) => trim($origin),
     explode(',', (string) env(
         'CORS_ALLOWED_ORIGINS',
-        $isLocalEnvironment ? 'http://localhost:5173,http://127.0.0.1:5173' : ''
+        $frontendUrl
     ))
 )));
 $allowedOriginPatterns = array_values(array_filter(array_map(

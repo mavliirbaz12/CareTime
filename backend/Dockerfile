@@ -4,7 +4,7 @@ WORKDIR /app
 COPY . .
 RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
 
-FROM php:8.4-cli
+FROM php:8.2-cli
 
 WORKDIR /var/www/html
 
@@ -15,7 +15,10 @@ RUN apt-get update \
 
 COPY --from=vendor /app/vendor ./vendor
 COPY . .
+COPY render-start.sh /usr/local/bin/render-start.sh
+
+RUN chmod +x /usr/local/bin/render-start.sh
 
 EXPOSE 10000
 
-CMD ["sh", "-lc", "php artisan storage:link || true; php artisan migrate --force; php artisan serve --host=0.0.0.0 --port=${PORT:-10000}"]
+CMD ["sh", "/usr/local/bin/render-start.sh"]

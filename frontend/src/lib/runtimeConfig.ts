@@ -28,7 +28,7 @@ export const apiBaseUrl = apiUrl.replace(/\/api\/?$/, '');
 
 export const webAppUrl =
   resolveConfigValue(runtimeConfig.VITE_WEB_APP_URL, import.meta.env.VITE_WEB_APP_URL) ||
-  (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173');
+  (typeof window !== 'undefined' ? window.location.origin : '');
 
 export const desktopDownloadUrl =
   resolveConfigValue(runtimeConfig.VITE_DESKTOP_DOWNLOAD_URL, import.meta.env.VITE_DESKTOP_DOWNLOAD_URL) ||

@@ -18,7 +18,15 @@ import {
 } from 'lucide-react';
 import AdaptiveSurface from '@/components/ui/AdaptiveSurface';
 import BrandLogo from '@/components/branding/BrandLogo';
-import { desktopDownloadLabel, desktopDownloadUrl } from '@/lib/runtimeConfig';
+import { apiUrl, desktopDownloadLabel, desktopDownloadUrl } from '@/lib/runtimeConfig';
+
+const extractLoginError = (error: any) => {
+  if (error?.code === 'ERR_NETWORK' || error?.message === 'Network Error') {
+    return `Cannot reach the API at ${apiUrl}. Make sure the Laravel backend is running, then try again.`;
+  }
+
+  return error?.response?.data?.message || 'Invalid email or password';
+};
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -37,7 +45,7 @@ export default function Login() {
       await login(email, password);
       navigate('/dashboard');
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Invalid email or password');
+      setError(extractLoginError(err));
     } finally {
       setIsLoading(false);
     }
