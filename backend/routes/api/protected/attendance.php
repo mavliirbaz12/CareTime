@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AttendanceController;
+use App\Http\Controllers\Api\AttendanceIdleAlertController;
 use App\Http\Controllers\Api\AttendanceTimeEditRequestController;
 use App\Http\Controllers\Api\LeaveRequestController;
 use Illuminate\Support\Facades\Route;
@@ -8,6 +9,7 @@ use Illuminate\Support\Facades\Route;
 Route::get('/attendance/today', [AttendanceController::class, 'today']);
 Route::post('/attendance/check-in', [AttendanceController::class, 'checkIn']);
 Route::post('/attendance/check-out', [AttendanceController::class, 'checkOut']);
+Route::post('/attendance/idle-stop-alert', [AttendanceIdleAlertController::class, 'store']);
 Route::get('/attendance/calendar', [AttendanceController::class, 'calendar']);
 Route::get('/attendance/summary', [AttendanceController::class, 'summary'])->middleware('role:admin,manager');
 

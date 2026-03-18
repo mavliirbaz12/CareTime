@@ -10,6 +10,7 @@ import FilterPanel from '@/components/dashboard/FilterPanel';
 import MetricCard from '@/components/dashboard/MetricCard';
 import PageHeader from '@/components/dashboard/PageHeader';
 import SurfaceCard from '@/components/dashboard/SurfaceCard';
+import { downloadBlob, extractApiErrorMessage } from '@/lib/downloads';
 import { getWorkingDuration } from '@/lib/timeBreakdown';
 import { BarChart3, Calendar, Clock, Download, TrendingUp, Users } from 'lucide-react';
 
@@ -116,16 +117,9 @@ export default function Reports() {
         user_ids: isAdmin && filterMode === 'user' && selectedUserIds.length > 0 ? selectedUserIds : undefined,
         group_ids: isAdmin && filterMode === 'group' && selectedGroupIds.length > 0 ? selectedGroupIds : undefined,
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `report-${startDate}-to-${endDate}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      downloadBlob(response.data, `report-${startDate}-to-${endDate}.csv`, 'text/csv');
     } catch (e: any) {
-      setExportError(e?.response?.data?.message || 'Failed to export report.');
+      setExportError(await extractApiErrorMessage(e, 'Failed to export report.'));
     }
   };
 

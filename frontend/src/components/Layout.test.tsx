@@ -109,6 +109,6 @@ describe('Layout navigation', () => {
     renderWithProviders(<Layout />, { route: '/dashboard' });
 
     const chatLink = await screen.findByRole('link', { name: /chat/i });
-    expect(within(chatLink).getByText('4')).toBeInTheDocument();
+    expect(await within(chatLink).findByText('4')).toBeInTheDocument();
   });
 });

@@ -1,6 +1,11 @@
 /// <reference types="vite/client" />
 
 interface DesktopTrackerBridge {
+  onIdleThresholdReached: (listener: (payload: {
+    idleSeconds: number;
+    thresholdSeconds: number;
+    detectedAt: string;
+  }) => void) => (() => void);
   captureScreenshot: () => Promise<string | null>;
   getSystemIdleSeconds: () => Promise<number>;
   getActiveWindowContext: () => Promise<{
@@ -8,6 +13,13 @@ interface DesktopTrackerBridge {
     title: string | null;
     url: string | null;
   } | null>;
+  revealWindow: () => Promise<boolean>;
+  restoreWindow: () => Promise<void>;
+  setTrackingState: (active: boolean, idleThresholdSeconds?: number) => Promise<{
+    active: boolean;
+    idleThresholdSeconds: number;
+  }>;
+  showNotification: (title: string, body: string) => Promise<void>;
 }
 
 interface AppRuntimeConfig {

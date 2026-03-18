@@ -193,7 +193,7 @@ export const projectApi = {
   getTimeEntries: (id: number, params?: { start_date?: string; end_date?: string }) => 
     api.get(`/projects/${id}/time-entries`, { params }),
   
-  getTasks: (id: number, params?: { status?: string }) => 
+  getTasks: (id: number, params?: { status?: string; assignee_id?: number }) => 
     api.get<Task[]>(`/projects/${id}/tasks`, { params }),
   
   getStats: (id: number, params?: { start_date?: string; end_date?: string }) => 
@@ -251,7 +251,11 @@ export const timeEntryApi = {
   start: (data?: { project_id?: number | null; task_id?: number | null; description?: string; billable?: boolean; timer_slot?: 'primary' | 'secondary' }) => 
     api.post<TimeEntry>('/time-entries/start', data || {}),
   
-  stop: (data?: { timer_slot?: 'primary' | 'secondary' }) => 
+  stop: (data?: {
+    timer_slot?: 'primary' | 'secondary';
+    auto_stopped_for_idle?: boolean;
+    idle_seconds?: number;
+  }) => 
     api.post<TimeEntry>('/time-entries/stop', data || {}),
   
   active: (params?: { timer_slot?: 'primary' | 'secondary' }) => 
@@ -344,7 +348,7 @@ export const reportApi = {
   team: (params?: { start_date?: string; end_date?: string }) => 
     api.get('/reports/team', { params }),
 
-  attendance: (params?: { start_date?: string; end_date?: string; user_id?: number; q?: string }) =>
+  attendance: (params?: { start_date?: string; end_date?: string; user_id?: number; group_ids?: number[]; q?: string }) =>
     api.get('/reports/attendance', { params }),
 
   employeeInsights: (params?: { start_date?: string; end_date?: string; user_id?: number; group_ids?: number[]; q?: string }) =>
@@ -400,6 +404,9 @@ export const attendanceApi = {
 
   checkOut: () => api.post('/attendance/check-out'),
 
+  idleStopAlert: (data: { idle_seconds: number; stopped_at?: string; timezone?: string }) =>
+    api.post<{ message: string }>('/attendance/idle-stop-alert', data),
+
   calendar: (params?: { month?: string; user_id?: number }) =>
     api.get<{
       month: string;
@@ -434,6 +441,9 @@ export const attendanceApi = {
         late_days: number;
         total_worked_seconds: number;
         is_checked_in: boolean;
+        first_timer_start?: string | null;
+        last_timer_end?: string | null;
+        is_timer_running?: boolean;
       }>;
     }>('/attendance/summary', { params }),
 };

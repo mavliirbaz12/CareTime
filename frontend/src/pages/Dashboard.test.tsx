@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Dashboard from '@/pages/Dashboard';
 import { renderWithProviders } from '@/test/renderWithProviders';
@@ -62,6 +62,8 @@ describe('Dashboard', () => {
         },
       },
     });
+
+    mocks.overtimeCreateMock.mockResolvedValue({ data: { id: 1 } });
   });
 
   it('shows employee progress metrics without timer controls', async () => {
@@ -73,5 +75,45 @@ describe('Dashboard', () => {
     expect(screen.getByText('Today at a glance')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /sending|send overtime proof/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/start tracking/i)).not.toBeInTheDocument();
+  });
+
+  it('records overtime automatically when worked time is above the shift target', async () => {
+    mocks.summaryMock.mockResolvedValue({
+      data: {
+        today_entries: [],
+        today_total_elapsed_duration: 32460,
+        all_time_total_elapsed_duration: 86400,
+        team_members_count: 4,
+        new_members_this_week: 1,
+        productivity_score: 82,
+        active_projects_count: 2,
+        total_projects_count: 3,
+      },
+    });
+
+    mocks.attendanceTodayMock.mockResolvedValue({
+      data: {
+        shift_target_seconds: 28800,
+        record: {
+          worked_seconds: 32460,
+          is_checked_in: true,
+          shift_target_seconds: 28800,
+          attendance_date: '2026-03-11',
+        },
+      },
+    });
+
+    renderWithProviders(<Dashboard />);
+
+    await waitFor(() => {
+      expect(mocks.overtimeCreateMock).toHaveBeenCalledWith(expect.objectContaining({
+        attendance_date: '2026-03-11',
+        extra_minutes: 61,
+        worked_seconds: 32460,
+        overtime_seconds: 3660,
+      }));
+    });
+
+    expect(await screen.findByText(/overtime is being recorded automatically/i)).toBeInTheDocument();
   });
 });

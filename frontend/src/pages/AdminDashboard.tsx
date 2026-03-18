@@ -26,6 +26,7 @@ import SurfaceCard from '@/components/dashboard/SurfaceCard';
 import Button from '@/components/ui/Button';
 import { FieldLabel, SelectInput, TextInput } from '@/components/ui/FormField';
 import { FeedbackBanner, PageErrorState } from '@/components/ui/PageState';
+import { downloadBlob, extractApiErrorMessage } from '@/lib/downloads';
 import { getWorkingDuration } from '@/lib/timeBreakdown';
 import {
   Activity,
@@ -57,6 +58,7 @@ interface PersistedFilterState {
 }
 
 const FILTER_STORAGE_KEY = 'admin-dashboard-filters';
+const ATTENDANCE_TABLE_SCROLL_CLASS = 'max-h-[28rem] overflow-y-auto overscroll-contain';
 
 const toDate = (value: Date) =>
   `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
@@ -350,8 +352,8 @@ export default function AdminDashboard() {
   }, [employees, filters.scope, filters.selectedEmployeeId]);
 
   const organizationQuery = useQuery({
-    queryKey: ['admin-dashboard-organization', filters.startDate, filters.endDate],
-    enabled: filters.scope === 'organization',
+    queryKey: ['admin-dashboard-organization', filters.startDate, filters.endDate, employees.map((employee: any) => employee.id).join(',')],
+    enabled: filters.scope === 'organization' && usersQuery.isSuccess,
     queryFn: async () => {
       const payrollMonth = filters.endDate.slice(0, 7);
       const [
@@ -485,20 +487,17 @@ export default function AdminDashboard() {
         user_ids: filters.scope === 'employee' && filters.selectedEmployeeId ? [Number(filters.selectedEmployeeId)] : undefined,
       });
 
-      const blobUrl = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = blobUrl;
-      link.setAttribute('download', `dashboard-${filters.scope}-${filters.startDate}-to-${filters.endDate}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(blobUrl);
+      downloadBlob(
+        response.data,
+        `dashboard-${filters.scope}-${filters.startDate}-to-${filters.endDate}.csv`,
+        'text/csv'
+      );
 
       setExportFeedback({ tone: 'success', message: 'Dashboard export completed.' });
     } catch (error: any) {
       setExportFeedback({
         tone: 'error',
-        message: error?.response?.data?.message || 'Failed to export dashboard data.',
+        message: await extractApiErrorMessage(error, 'Failed to export dashboard data.'),
       });
     } finally {
       setIsExporting(false);
@@ -632,6 +631,14 @@ export default function AdminDashboard() {
   });
   const presentAttendanceRows = filteredAttendanceRows.filter((row: any) => Number(row.present_days || row.days_present || 0) > 0);
   const absentAttendanceRows = filteredAttendanceRows.filter((row: any) => Number(row.present_days || row.days_present || 0) <= 0);
+  const attendanceTimerRows = filteredAttendanceRows.map((row: any) => {
+    return {
+      ...row,
+      first_timer_start: row.first_timer_start || null,
+      last_timer_end: row.last_timer_end || null,
+      is_timer_running: Boolean(row.is_timer_running),
+    };
+  });
   const presentEmployees = attendanceRows.filter((row: any) => Number(row.present_days || row.days_present || 0) > 0).length;
   const lateEmployees = attendanceRows.filter((row: any) => Number(row.late_days || 0) > 0).length;
   const absentEmployees = Math.max(attendanceRows.length - presentEmployees, 0);
@@ -1091,6 +1098,8 @@ export default function AdminDashboard() {
                           description="Employees with at least one present day in the selected range."
                           rows={presentAttendanceRows}
                           emptyMessage="No present employees match the current search or group filter."
+                          bodyClassName={ATTENDANCE_TABLE_SCROLL_CLASS}
+                          stickyHeader
                           columns={[
                             {
                               key: 'employee',
@@ -1122,6 +1131,8 @@ export default function AdminDashboard() {
                           description="Employees with no present day recorded in the selected range."
                           rows={absentAttendanceRows}
                           emptyMessage="No absent employees match the current search or group filter."
+                          bodyClassName={ATTENDANCE_TABLE_SCROLL_CLASS}
+                          stickyHeader
                           columns={[
                             {
                               key: 'employee',
@@ -1148,6 +1159,52 @@ export default function AdminDashboard() {
                           ]}
                         />
                       </div>
+
+                      <DataTable
+                        title="Timer check-in / check-out"
+                        description="First timer start and most recent timer stop in the selected range."
+                        rows={attendanceTimerRows}
+                        emptyMessage="No employees match the current search or group filter."
+                        bodyClassName={ATTENDANCE_TABLE_SCROLL_CLASS}
+                        stickyHeader
+                        columns={[
+                          {
+                            key: 'employee',
+                            header: 'Employee',
+                            render: (row: any) => (
+                              <div>
+                                <p className="font-medium text-slate-950">{row.user?.name || 'Unknown'}</p>
+                                <p className="text-xs text-slate-500">{row.user?.email || 'No email'}</p>
+                              </div>
+                            ),
+                          },
+                          {
+                            key: 'check_in',
+                            header: 'Check in',
+                            render: (row: any) => row.first_timer_start ? (
+                              <div>
+                                <p className="font-medium text-slate-950">{new Date(row.first_timer_start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                                <p className="text-xs text-slate-500">{new Date(row.first_timer_start).toLocaleDateString()}</p>
+                              </div>
+                            ) : 'No start',
+                          },
+                          {
+                            key: 'check_out',
+                            header: 'Check out',
+                            render: (row: any) => row.last_timer_end ? (
+                              <div>
+                                <p className="font-medium text-slate-950">{new Date(row.last_timer_end).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                                <p className="text-xs text-slate-500">{new Date(row.last_timer_end).toLocaleDateString()}</p>
+                              </div>
+                            ) : row.is_timer_running ? 'Still running' : 'No stop',
+                          },
+                          {
+                            key: 'status',
+                            header: 'Status',
+                            render: (row: any) => row.is_timer_running ? 'Running' : row.last_timer_end ? 'Stopped' : 'No timer',
+                          },
+                        ]}
+                      />
                     </div>
                   ),
                 },

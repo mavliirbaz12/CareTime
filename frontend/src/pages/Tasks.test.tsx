@@ -46,6 +46,7 @@ describe('Tasks page', () => {
           id: 1,
           project_id: 7,
           assignee_id: 3,
+          assignee_ids: [3],
           title: 'Build KPI overview',
           description: 'Create the first draft of the KPI overview cards.',
           status: 'todo',
@@ -56,11 +57,13 @@ describe('Tasks page', () => {
           updated_at: '2026-03-15T10:00:00Z',
           project: { id: 7, name: 'Core Platform', color: '#3B82F6', status: 'active' },
           assignee: { id: 3, name: 'Alex Johnson', email: 'alex@example.com', role: 'employee' },
+          assignees: [{ id: 3, name: 'Alex Johnson', email: 'alex@example.com', role: 'employee' }],
         },
         {
           id: 2,
           project_id: 8,
           assignee_id: null,
+          assignee_ids: [],
           title: 'Prepare onboarding docs',
           description: 'Write the setup notes for new hires.',
           status: 'done',
@@ -94,6 +97,16 @@ describe('Tasks page', () => {
           created_at: '',
           updated_at: '',
         },
+        {
+          id: 4,
+          name: 'Priya Shah',
+          email: 'priya@example.com',
+          role: 'employee',
+          organization_id: 1,
+          is_active: true,
+          created_at: '',
+          updated_at: '',
+        },
       ],
     });
   });
@@ -111,5 +124,34 @@ describe('Tasks page', () => {
 
     expect(screen.getByText('Build KPI overview')).toBeInTheDocument();
     expect(screen.queryByText('Prepare onboarding docs')).not.toBeInTheDocument();
+  });
+
+  it('submits multiple assignees from the task composer', async () => {
+    const user = userEvent.setup();
+    mocks.createTask.mockResolvedValue({ data: { id: 3 } });
+
+    renderWithProviders(<Tasks />);
+
+    await user.click(await screen.findByRole('button', { name: /new task/i }));
+    await user.type(screen.getByPlaceholderText(/prepare weekly performance review/i), 'Coordinate rollout');
+    const projectSelects = screen.getAllByRole('combobox').filter((element) => {
+      return element.querySelector('option[value="7"]') !== null;
+    });
+    expect(projectSelects.length).toBeGreaterThan(0);
+    await user.selectOptions(projectSelects[projectSelects.length - 1], '7');
+
+    await user.click(screen.getByRole('button', { name: /unassigned/i }));
+    await user.click(screen.getByLabelText(/alex johnson/i));
+    await user.click(screen.getByLabelText(/priya shah/i));
+    await user.click(screen.getByRole('button', { name: /^done$/i }));
+    await user.click(screen.getByRole('button', { name: /create task/i }));
+
+    expect(mocks.createTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'Coordinate rollout',
+        project_id: 7,
+        assignee_ids: [3, 4],
+      })
+    );
   });
 });

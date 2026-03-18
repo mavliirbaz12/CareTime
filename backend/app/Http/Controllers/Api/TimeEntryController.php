@@ -10,6 +10,7 @@ use App\Models\Project;
 use App\Models\Task;
 use App\Models\TimeEntry;
 use App\Models\User;
+use App\Services\TimeEntries\IdleAutoStopMailService;
 use App\Services\TimeEntries\TimeEntryDurationService;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection;
@@ -21,6 +22,7 @@ class TimeEntryController extends Controller
 {
     public function __construct(
         private readonly TimeEntryDurationService $timeEntryDurationService,
+        private readonly IdleAutoStopMailService $idleAutoStopMailService,
     ) {
     }
 
@@ -56,7 +58,7 @@ class TimeEntryController extends Controller
             ->when($request->start_date, fn (Builder $q, string $start) => $q->whereDate('start_time', '>=', $start))
             ->when($request->end_date, fn (Builder $q, string $end) => $q->whereDate('start_time', '<=', $end))
             ->orderBy('start_time', 'desc')
-            ->paginate((int) $request->get('per_page', 15));
+            ->paginate(min(100, max(1, (int) $request->get('per_page', 15))));
 
         $resolvedNow = now();
         $timeEntries->setCollection(
@@ -143,6 +145,11 @@ class TimeEntryController extends Controller
         $user = $request->user();
         if (!$user) {
             return response()->json(['message' => 'Unauthenticated.'], 401);
+        }
+
+        $timeWindowError = $this->validateRequestedTimeWindow($request, $timeEntry);
+        if ($timeWindowError) {
+            return $timeWindowError;
         }
 
         $assignment = $this->resolveProjectAndTask($request, $user, $timeEntry);
@@ -234,6 +241,8 @@ class TimeEntryController extends Controller
     {
         $request->validate([
             'timer_slot' => 'nullable|in:primary,secondary',
+            'auto_stopped_for_idle' => 'nullable|boolean',
+            'idle_seconds' => 'nullable|integer|min:1|max:86400',
         ]);
 
         $user = $request->user();
@@ -256,6 +265,14 @@ class TimeEntryController extends Controller
 
         if ($slot === 'primary') {
             $this->ensureAttendanceCheckedOutForBreak($user->id, $stoppedAt);
+        }
+
+        if ($request->boolean('auto_stopped_for_idle')) {
+            $this->idleAutoStopMailService->send(
+                user: $user,
+                idleSeconds: (int) $request->input('idle_seconds', 0),
+                stoppedAt: $stoppedAt,
+            );
         }
 
         return response()->json($timeEntry->load('project', 'task'));
@@ -514,5 +531,30 @@ class TimeEntryController extends Controller
         }
 
         return [$projectId, $taskId];
+    }
+
+    private function validateRequestedTimeWindow(Request $request, ?TimeEntry $existingEntry = null): ?JsonResponse
+    {
+        if (!$request->exists('start_time') && !$request->exists('end_time')) {
+            return null;
+        }
+
+        $startTime = $request->filled('start_time')
+            ? Carbon::parse((string) $request->input('start_time'))
+            : ($existingEntry?->start_time ? Carbon::parse($existingEntry->start_time) : null);
+        $endTime = $request->filled('end_time')
+            ? Carbon::parse((string) $request->input('end_time'))
+            : ($existingEntry?->end_time ? Carbon::parse($existingEntry->end_time) : null);
+
+        if ($startTime && $endTime && $endTime->lessThanOrEqualTo($startTime)) {
+            return response()->json([
+                'message' => 'End time must be after start time.',
+                'errors' => [
+                    'end_time' => ['End time must be after start time.'],
+                ],
+            ], 422);
+        }
+
+        return null;
     }
 }

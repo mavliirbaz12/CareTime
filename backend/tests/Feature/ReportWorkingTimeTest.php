@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Models\Activity;
 use App\Models\Organization;
+use App\Models\ReportGroup;
 use App\Models\TimeEntry;
 use App\Models\User;
 use Carbon\Carbon;
@@ -222,6 +223,45 @@ class ReportWorkingTimeTest extends TestCase
         } finally {
             Carbon::setTestNow();
         }
+    }
+
+    public function test_report_export_uses_live_duration_for_open_time_entries(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-03-16 11:15:00'));
+
+        try {
+            [$admin, $employee, $headers] = $this->createAdminAndEmployee();
+            $this->createOpenEntryFor($employee);
+
+            $response = $this->get('/api/reports/export?start_date=2026-03-16&end_date=2026-03-16&user_ids[]='.$employee->id, $headers);
+
+            $response->assertOk();
+            $content = $response->streamedContent();
+
+            $this->assertStringContainsString('Date,Employee,Project,Task,Description,"Duration (seconds)",Billable', $content);
+            $this->assertStringContainsString('Smit', $content);
+            $this->assertStringContainsString('1800,Yes', $content);
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_report_export_returns_only_the_header_when_group_scope_has_no_users(): void
+    {
+        [$admin, $employee, $headers] = $this->createAdminAndEmployee();
+
+        $emptyGroup = ReportGroup::create([
+            'organization_id' => $admin->organization_id,
+            'name' => 'Empty Group',
+        ]);
+
+        $response = $this->get('/api/reports/export?start_date=2026-03-16&end_date=2026-03-16&group_ids[]='.$emptyGroup->id, $headers);
+
+        $response->assertOk();
+        $this->assertSame(
+            "Date,Employee,Project,Task,Description,\"Duration (seconds)\",Billable\n",
+            $response->streamedContent()
+        );
     }
 
     private function createAuthenticatedEmployee(string $role = 'employee'): array

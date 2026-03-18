@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import MetricCard from '@/components/dashboard/MetricCard';
 import SurfaceCard from '@/components/dashboard/SurfaceCard';
@@ -36,7 +36,7 @@ type TaskFormState = {
   title: string;
   description: string;
   project_id: string;
-  assignee_id: string;
+  assignee_ids: string[];
   status: SavedTaskStatus;
   priority: TaskPriority;
   due_date: string;
@@ -85,7 +85,7 @@ const createTaskFormState = (projectId = '', status: SavedTaskStatus = 'todo'): 
   title: '',
   description: '',
   project_id: projectId,
-  assignee_id: '',
+  assignee_ids: [],
   status,
   priority: 'medium',
   due_date: '',
@@ -129,6 +129,14 @@ const formatMinutes = (value?: number | null) => {
   return `${remainder}m`;
 };
 
+const getTaskAssignees = (task: Task) => {
+  if (task.assignees && task.assignees.length > 0) {
+    return task.assignees;
+  }
+
+  return task.assignee ? [task.assignee] : [];
+};
+
 const getDueMeta = (task: Task) => {
   if (task.status === 'done') return { tone: 'done' as const, label: 'Completed' };
   const dueDate = toSafeDate(task.due_date);
@@ -152,6 +160,7 @@ export default function Tasks() {
   const [statusFilter, setStatusFilter] = useState<'all' | SavedTaskStatus>('all');
   const [projectFilter, setProjectFilter] = useState<string>('all');
   const [assigneeFilter, setAssigneeFilter] = useState<string>('all');
+  const [isAssigneePickerOpen, setIsAssigneePickerOpen] = useState(false);
   const [taskFormData, setTaskFormData] = useState<TaskFormState>(createTaskFormState());
   const [projectFormData, setProjectFormData] = useState<ProjectFormState>(createProjectFormState());
 
@@ -173,6 +182,7 @@ export default function Tasks() {
   const resetTaskForm = (projectId = '', status: SavedTaskStatus = 'todo') => {
     setTaskFormData(createTaskFormState(projectId, status));
     setEditingTask(null);
+    setIsAssigneePickerOpen(false);
   };
 
   const resetProjectForm = () => setProjectFormData(createProjectFormState());
@@ -240,13 +250,18 @@ export default function Tasks() {
       title: task.title,
       description: task.description || '',
       project_id: task.project_id ? String(task.project_id) : '',
-      assignee_id: task.assignee_id ? String(task.assignee_id) : '',
+      assignee_ids: (task.assignees && task.assignees.length > 0
+        ? task.assignees.map((user) => String(user.id))
+        : task.assignee_id
+          ? [String(task.assignee_id)]
+          : []),
       status: (task.status === 'in_review' ? 'todo' : task.status) as SavedTaskStatus,
       priority: task.priority || 'medium',
       due_date: task.due_date?.split('T')[0] || '',
       estimated_time: task.estimated_time ? String(task.estimated_time) : '',
     });
     setShowTaskModal(true);
+    setIsAssigneePickerOpen(false);
   };
 
   const handleTaskSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -260,7 +275,7 @@ export default function Tasks() {
       title: taskFormData.title.trim(),
       description: taskFormData.description.trim() || undefined,
       project_id: Number(taskFormData.project_id),
-      assignee_id: taskFormData.assignee_id ? Number(taskFormData.assignee_id) : undefined,
+      assignee_ids: taskFormData.assignee_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0),
       status: taskFormData.status,
       priority: taskFormData.priority,
       due_date: taskFormData.due_date || undefined,
@@ -301,16 +316,30 @@ export default function Tasks() {
   };
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
+  const selectedAssigneeUsers = useMemo(
+    () => users.filter((user) => taskFormData.assignee_ids.includes(String(user.id))),
+    [taskFormData.assignee_ids, users]
+  );
+  const toggleTaskAssignee = (userId: string) => {
+    setTaskFormData((current) => ({
+      ...current,
+      assignee_ids: current.assignee_ids.includes(userId)
+        ? current.assignee_ids.filter((id) => id !== userId)
+        : [...current.assignee_ids, userId],
+    }));
+  };
   const filteredTasks = tasks
     .filter((task) => {
+      const taskAssignees = getTaskAssignees(task);
       const matchesSearch =
         !normalizedSearch ||
-        [task.title, task.description, task.project?.name, task.assignee?.name, task.assignee?.email]
+        [task.title, task.description, task.project?.name, ...taskAssignees.flatMap((assignee) => [assignee.name, assignee.email])]
           .filter(Boolean)
           .some((value) => String(value).toLowerCase().includes(normalizedSearch));
       const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
       const matchesProject = projectFilter === 'all' || String(task.project_id) === projectFilter;
-      const matchesAssignee = assigneeFilter === 'all' || String(task.assignee_id || '') === assigneeFilter;
+      const matchesAssignee = assigneeFilter === 'all'
+        || (assigneeFilter === '' ? taskAssignees.length === 0 : taskAssignees.some((assignee) => String(assignee.id) === assigneeFilter));
       return matchesSearch && matchesStatus && matchesProject && matchesAssignee;
     })
     .sort((left, right) => {
@@ -442,7 +471,7 @@ export default function Tasks() {
                 {columnTasks.map((task) => {
                   const dueMeta = getDueMeta(task);
                   const projectName = task.project?.name || 'No project';
-                  const assigneeName = task.assignee?.name || 'Unassigned';
+                  const assigneeNames = getTaskAssignees(task).map((assignee) => assignee.name).join(', ') || 'Unassigned';
                   return (
                     <article key={task.id} className={cn('rounded-[24px] border p-4 shadow-[0_18px_44px_-34px_rgba(15,23,42,0.18)] transition duration-300 hover:-translate-y-0.5 hover:shadow-[0_22px_48px_-32px_rgba(15,23,42,0.26)]', dueMeta.tone === 'overdue' ? 'border-rose-200 bg-rose-50/50' : 'border-slate-200 bg-white/90')}>
                       <div className="flex items-start justify-between gap-4">
@@ -477,7 +506,7 @@ export default function Tasks() {
                       </div>
 
                       <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        <TaskDetailItem icon={UserRound} label="Assignee" value={assigneeName} />
+                        <TaskDetailItem icon={UserRound} label="Assignees" value={assigneeNames} />
                         <TaskDetailItem icon={CalendarDays} label="Due Date" value={task.due_date ? formatDate(task.due_date) : 'No deadline'} />
                         <TaskDetailItem icon={TimerReset} label="Estimate" value={formatMinutes(task.estimated_time)} />
                         <TaskDetailItem icon={Clock3} label="Updated" value={formatDateTime(task.updated_at)} />
@@ -533,11 +562,61 @@ export default function Tasks() {
                 </div>
 
                 <div>
-                  <FieldLabel>Assignee</FieldLabel>
-                  <SelectInput value={taskFormData.assignee_id} onChange={(event) => setTaskFormData((current) => ({ ...current, assignee_id: event.target.value }))}>
-                    <option value="">Unassigned</option>
-                    {users.map((user) => <option key={user.id} value={user.id}>{user.name}</option>)}
-                  </SelectInput>
+                  <FieldLabel hint={selectedAssigneeUsers.length ? `${selectedAssigneeUsers.length} selected` : 'Optional'}>Assignees</FieldLabel>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => setIsAssigneePickerOpen((current) => !current)}
+                      className="flex w-full items-center justify-between rounded-[20px] border border-slate-200/90 bg-white/85 px-3.5 py-2.5 text-left text-sm text-slate-900 shadow-[0_16px_30px_-24px_rgba(15,23,42,0.25)] transition duration-300 hover:border-sky-300 hover:bg-white focus:outline-none focus:ring-2 focus:ring-sky-300/25"
+                    >
+                      <span className="truncate">
+                        {selectedAssigneeUsers.length > 0 ? selectedAssigneeUsers.map((user) => user.name).join(', ') : 'Unassigned'}
+                      </span>
+                      <span className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">
+                        {isAssigneePickerOpen ? 'Close' : 'Select'}
+                      </span>
+                    </button>
+                    {isAssigneePickerOpen ? (
+                      <div className="absolute left-0 right-0 z-20 mt-2 rounded-[24px] border border-slate-200 bg-white p-3 shadow-[0_24px_64px_-40px_rgba(15,23,42,0.4)]">
+                        <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+                          {users.map((user) => {
+                            const checked = taskFormData.assignee_ids.includes(String(user.id));
+                            return (
+                              <label key={user.id} className={cn('flex cursor-pointer items-start gap-3 rounded-2xl border px-3 py-2.5 text-sm transition', checked ? 'border-sky-300 bg-sky-50' : 'border-slate-200 bg-slate-50/70 hover:border-slate-300')}>
+                                <input
+                                  type="checkbox"
+                                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-sky-600 focus:ring-sky-500"
+                                  checked={checked}
+                                  onChange={() => toggleTaskAssignee(String(user.id))}
+                                />
+                                <span className="min-w-0">
+                                  <span className="block font-medium text-slate-900">{user.name}</span>
+                                  <span className="block truncate text-xs text-slate-500">{user.email}</span>
+                                </span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
+                          <button
+                            type="button"
+                            onClick={() => setTaskFormData((current) => ({ ...current, assignee_ids: [] }))}
+                            className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 transition hover:text-slate-700"
+                          >
+                            Clear all
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsAssigneePickerOpen(false)}
+                            className="text-xs font-semibold uppercase tracking-[0.14em] text-sky-600 transition hover:text-sky-700"
+                          >
+                            Done
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">Select one or more employees to share this task.</p>
                 </div>
 
                 <div>
@@ -575,7 +654,7 @@ export default function Tasks() {
                 <p className="text-sm font-semibold text-slate-950">Task summary</p>
                 <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                   <TaskSummaryItem label="Project" value={taskFormData.project_id ? projects.find((project) => String(project.id) === taskFormData.project_id)?.name || 'Selected project' : 'Not selected'} />
-                  <TaskSummaryItem label="Assignee" value={taskFormData.assignee_id ? users.find((user) => String(user.id) === taskFormData.assignee_id)?.name || 'Selected assignee' : 'Unassigned'} />
+                  <TaskSummaryItem label="Assignees" value={selectedAssigneeUsers.length > 0 ? selectedAssigneeUsers.map((user) => user.name).join(', ') : 'Unassigned'} />
                   <TaskSummaryItem label="Estimate" value={taskFormData.estimated_time ? formatMinutes(Number(taskFormData.estimated_time)) : 'No estimate'} />
                 </div>
               </div>

@@ -274,17 +274,57 @@ class AttendanceService
         }
 
         $users = $usersQuery->orderBy('name')->get(['id', 'name', 'email', 'role']);
-        $rows = $users->map(function (User $user) use ($currentUser, $start, $end) {
-            $records = AttendanceRecord::where('organization_id', $currentUser->organization_id)
-                ->where('user_id', $user->id)
-                ->whereBetween('attendance_date', [$start->toDateString(), $end->toDateString()])
-                ->with('punches')
-                ->get();
+        if ($users->isEmpty()) {
+            return [
+                'start_date' => $start->toDateString(),
+                'end_date' => $end->toDateString(),
+                'data' => [],
+            ];
+        }
+
+        $userIds = $users->pluck('id')
+            ->map(fn ($id) => (int) $id)
+            ->filter(fn ($id) => $id > 0)
+            ->values();
+
+        $recordsByUser = AttendanceRecord::query()
+            ->where('organization_id', $currentUser->organization_id)
+            ->whereIn('user_id', $userIds)
+            ->whereBetween('attendance_date', [$start->toDateString(), $end->toDateString()])
+            ->with(['punches:id,attendance_record_id,punch_in_at,punch_out_at,worked_seconds'])
+            ->get([
+                'id',
+                'user_id',
+                'attendance_date',
+                'check_in_at',
+                'late_minutes',
+                'worked_seconds',
+                'manual_adjustment_seconds',
+            ])
+            ->groupBy('user_id');
+
+        $timeEntriesByUser = TimeEntry::query()
+            ->whereIn('user_id', $userIds)
+            ->whereBetween('start_time', [$start, $end])
+            ->get(['user_id', 'start_time', 'end_time'])
+            ->groupBy('user_id');
+
+        $rows = $users->map(function (User $user) use ($recordsByUser, $timeEntriesByUser) {
+            $records = $recordsByUser->get($user->id, collect());
 
             $presentDays = $records->whereNotNull('check_in_at')->count();
             $lateDays = $records->filter(fn ($r) => (int) $r->late_minutes > 0)->count();
             $totalWorkedSeconds = (int) $records->sum(fn (AttendanceRecord $r) => $this->calculateEffectiveWorkedSeconds($r));
             $checkedInToday = $records->first(fn (AttendanceRecord $r) => $this->hasOpenPunch($r) && Carbon::parse($r->attendance_date)->isToday());
+            $timeEntries = $timeEntriesByUser->get($user->id, collect());
+            $firstTimerStart = $timeEntries
+                ->filter(fn (TimeEntry $entry) => filled($entry->start_time))
+                ->sortBy('start_time')
+                ->first()?->start_time;
+            $lastTimerEnd = $timeEntries
+                ->filter(fn (TimeEntry $entry) => filled($entry->end_time))
+                ->sortByDesc('end_time')
+                ->first()?->end_time;
 
             return [
                 'user' => $user,
@@ -292,6 +332,9 @@ class AttendanceService
                 'late_days' => $lateDays,
                 'total_worked_seconds' => $totalWorkedSeconds,
                 'is_checked_in' => (bool) $checkedInToday,
+                'first_timer_start' => $firstTimerStart,
+                'last_timer_end' => $lastTimerEnd,
+                'is_timer_running' => $timeEntries->contains(fn (TimeEntry $entry) => !$entry->end_time),
             ];
         })->values();
 

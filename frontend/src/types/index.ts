@@ -60,6 +60,7 @@ export interface Task {
   id: number;
   project_id: number;
   assignee_id?: number;
+  assignee_ids?: number[];
   title: string;
   description?: string;
   status: 'todo' | 'in_progress' | 'in_review' | 'done';
@@ -70,6 +71,7 @@ export interface Task {
   updated_at: string;
   project?: Project;
   assignee?: User;
+  assignees?: User[];
 }
 
 // Time Entry Types

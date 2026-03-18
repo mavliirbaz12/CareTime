@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { attendanceApi, attendanceTimeEditApi, dashboardApi } from '@/services/api';
 import PageHeader from '@/components/dashboard/PageHeader';
 import MetricCard from '@/components/dashboard/MetricCard';
 import SurfaceCard from '@/components/dashboard/SurfaceCard';
 import Button from '@/components/ui/Button';
-import { PageLoadingState } from '@/components/ui/PageState';
+import { FeedbackBanner, PageLoadingState } from '@/components/ui/PageState';
 import {
   Calendar,
   CheckCircle2,
@@ -35,6 +35,8 @@ export default function Dashboard() {
   const [workedSeconds, setWorkedSeconds] = useState(0);
   const [isSubmittingOvertime, setIsSubmittingOvertime] = useState(false);
   const [notice, setNotice] = useState('');
+  const [overtimeStatus, setOvertimeStatus] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const lastSyncedOvertimeKeyRef = useRef('');
 
   useEffect(() => {
     const fetchData = async () => {
@@ -80,6 +82,8 @@ export default function Dashboard() {
 
   const remainingShiftSeconds = Math.max(0, shiftTargetSeconds - workedSeconds);
   const overtimeSeconds = Math.max(0, workedSeconds - shiftTargetSeconds);
+  const overtimeMinutes = overtimeSeconds > 0 ? Math.ceil(overtimeSeconds / 60) : 0;
+  const attendanceDate = attendanceToday?.attendance_date || new Date().toISOString().split('T')[0];
   const isCheckedIn = Boolean(attendanceToday?.is_checked_in || activeTimer);
   const completionPercent = shiftTargetSeconds > 0
     ? Math.min(100, Math.round((workedSeconds / shiftTargetSeconds) * 100))
@@ -87,6 +91,50 @@ export default function Dashboard() {
   const completedShift = workedSeconds >= shiftTargetSeconds;
   const completedSessions = todayEntries.filter((entry) => Boolean(entry.end_time)).length;
   const averageEntrySeconds = todayEntries.length > 0 ? Math.round(todayTotal / todayEntries.length) : 0;
+
+  useEffect(() => {
+    if (!user?.id || overtimeMinutes <= 0) {
+      if (overtimeMinutes <= 0) {
+        lastSyncedOvertimeKeyRef.current = '';
+        setOvertimeStatus(null);
+      }
+      return;
+    }
+
+    const syncKey = `${user.id}:${attendanceDate}:${overtimeMinutes}`;
+    if (lastSyncedOvertimeKeyRef.current === syncKey) {
+      return;
+    }
+
+    let cancelled = false;
+    setIsSubmittingOvertime(true);
+
+    attendanceTimeEditApi.create({
+      attendance_date: attendanceDate,
+      extra_minutes: overtimeMinutes,
+      worked_seconds: workedSeconds,
+      overtime_seconds: overtimeSeconds,
+      message: `Automatic overtime tracking from dashboard. Overtime: ${formatDuration(overtimeSeconds)}.`,
+    }).then(() => {
+      if (cancelled) return;
+      lastSyncedOvertimeKeyRef.current = syncKey;
+      setOvertimeStatus({ tone: 'success', message: 'Overtime is being recorded automatically.' });
+    }).catch((error: any) => {
+      if (cancelled) return;
+      setOvertimeStatus({
+        tone: 'error',
+        message: error?.response?.data?.message || 'Failed to record overtime automatically.',
+      });
+    }).finally(() => {
+      if (!cancelled) {
+        setIsSubmittingOvertime(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attendanceDate, overtimeMinutes, overtimeSeconds, user?.id, workedSeconds]);
 
   const submitOvertimeProof = async () => {
     if (overtimeSeconds <= 0) {
@@ -100,14 +148,18 @@ export default function Dashboard() {
       const todayDate = attendanceToday?.attendance_date || new Date().toISOString().split('T')[0];
       await attendanceTimeEditApi.create({
         attendance_date: todayDate,
-        extra_minutes: Math.ceil(overtimeSeconds / 60),
+        extra_minutes: overtimeMinutes,
         worked_seconds: workedSeconds,
         overtime_seconds: overtimeSeconds,
         message: `Dashboard overtime summary submitted. Overtime: ${formatDuration(overtimeSeconds)}.`,
       });
+      lastSyncedOvertimeKeyRef.current = `${user?.id ?? 'guest'}:${todayDate}:${overtimeMinutes}`;
+      setOvertimeStatus({ tone: 'success', message: 'Overtime is being recorded automatically.' });
       setNotice(`Overtime proof sent. Extra time: ${formatDuration(overtimeSeconds)}.`);
     } catch (error: any) {
-      setNotice(error?.response?.data?.message || 'Failed to submit overtime proof.');
+      const message = error?.response?.data?.message || 'Failed to submit overtime proof.';
+      setOvertimeStatus({ tone: 'error', message });
+      setNotice(message);
     } finally {
       setIsSubmittingOvertime(false);
     }
@@ -213,7 +265,7 @@ export default function Dashboard() {
             <Clock className="h-4 w-4" />
             Total tracked {formatDuration(allTimeTotal)}
           </div>
-          {overtimeSeconds > 0 ? (
+          {overtimeSeconds > 0 && overtimeStatus?.tone !== 'success' ? (
             <Button
               onClick={submitOvertimeProof}
               disabled={isSubmittingOvertime}
@@ -221,12 +273,14 @@ export default function Dashboard() {
               size="sm"
               className="bg-white text-primary-700 hover:bg-sky-50"
             >
-              {isSubmittingOvertime ? 'Sending...' : 'Send overtime proof'}
+              {isSubmittingOvertime ? 'Syncing overtime...' : 'Send overtime proof'}
             </Button>
           ) : null}
           {notice ? <span className="text-sm text-cyan-50">{notice}</span> : null}
         </div>
       </SurfaceCard>
+
+      {overtimeStatus ? <FeedbackBanner tone={overtimeStatus.tone} message={overtimeStatus.message} /> : null}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Worked Today" value={formatDuration(workedSeconds)} hint={todayDeltaLabel} icon={Clock} accent="sky" />

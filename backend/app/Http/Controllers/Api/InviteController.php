@@ -17,7 +17,7 @@ class InviteController extends Controller
     {
         $validated = $request->validate([
             'email' => 'required|email',
-            'role' => 'nullable|string',
+            'role' => 'nullable|in:admin,manager,employee,client',
         ]);
 
         $email = mb_strtolower(trim((string) $validated['email']));

@@ -1,11 +1,23 @@
 import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { attendanceApi, attendanceTimeEditApi, timeEntryApi, dashboardApi, projectApi } from '@/services/api';
+import {
+  ACTIVE_TIMER_KEY,
+  clearAutoStartArm,
+  clearAutoStartSuppression,
+  clearIdleAutoStopNotice,
+  consumeIdleAutoStopNotice,
+  DESKTOP_TIMER_IDLE_STOP_EVENT,
+  type DesktopTimerIdleStopDetail,
+  isAutoStartArmed,
+  isAutoStartSuppressed,
+  suppressAutoStart,
+} from '@/lib/desktopTimerSession';
 import PageHeader from '@/components/dashboard/PageHeader';
 import MetricCard from '@/components/dashboard/MetricCard';
 import SurfaceCard from '@/components/dashboard/SurfaceCard';
 import Button from '@/components/ui/Button';
-import { PageLoadingState } from '@/components/ui/PageState';
+import { FeedbackBanner, PageLoadingState } from '@/components/ui/PageState';
 import { SelectInput } from '@/components/ui/FormField';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
@@ -20,32 +32,28 @@ import {
 import type { TimeEntry } from '@/types';
 import type { Project, Task } from '@/types';
 
-const ACTIVE_TIMER_KEY = 'active_timer_snapshot';
-const AUTO_START_SUPPRESSED_KEY = 'desktop_timer_auto_start_suppressed';
-
-const getAutoStartSuppressionKey = (userId?: number | null) => `${AUTO_START_SUPPRESSED_KEY}:${userId ?? 'guest'}`;
-
-const suppressAutoStart = (userId?: number | null) => {
-  if (!userId) return;
-  sessionStorage.setItem(getAutoStartSuppressionKey(userId), '1');
-};
-
-const clearAutoStartSuppression = (userId?: number | null) => {
-  if (!userId) return;
-  sessionStorage.removeItem(getAutoStartSuppressionKey(userId));
-};
-
-const isAutoStartSuppressed = (userId?: number | null) => {
-  if (!userId) return false;
-  return sessionStorage.getItem(getAutoStartSuppressionKey(userId)) === '1';
-};
-
 const getStartTimeMs = (startTime?: string) => {
   if (!startTime) return NaN;
   const parsed = new Date(startTime).getTime();
   if (Number.isFinite(parsed)) return parsed;
   const normalized = startTime.includes('T') ? startTime : startTime.replace(' ', 'T');
   return new Date(normalized).getTime();
+};
+
+const isTaskAssignedToUser = (task: Task, currentUserId: number | null) => {
+  if (!currentUserId) {
+    return false;
+  }
+
+  if (Array.isArray(task.assignees) && task.assignees.length > 0) {
+    return task.assignees.some((assignee) => assignee.id === currentUserId);
+  }
+
+  if (Array.isArray(task.assignee_ids) && task.assignee_ids.length > 0) {
+    return task.assignee_ids.includes(currentUserId);
+  }
+
+  return task.assignee_id === currentUserId;
 };
 
 export default function DesktopTimerDashboard() {
@@ -76,8 +84,11 @@ export default function DesktopTimerDashboard() {
   const [isLoadingProjectTasks, setIsLoadingProjectTasks] = useState(false);
   const [isUpdatingTimerContext, setIsUpdatingTimerContext] = useState(false);
   const [notice, setNotice] = useState('');
+  const [feedback, setFeedback] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
+  const [overtimeStatus, setOvertimeStatus] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const hasRestoredSnapshotRef = useRef(false);
   const hasAttemptedAutoStartRef = useRef(false);
+  const lastSyncedOvertimeKeyRef = useRef('');
 
   useEffect(() => {
     if (!activeTimer) {
@@ -139,8 +150,8 @@ export default function DesktopTimerDashboard() {
 
     setIsLoadingProjectTasks(true);
     try {
-      const response = await projectApi.getTasks(projectId);
-      const nextTasks = (response.data || []).filter((task) => task.status !== 'done');
+      const response = await projectApi.getTasks(projectId, userId ? { assignee_id: userId } : undefined);
+      const nextTasks = (response.data || []).filter((task) => task.status !== 'done' && isTaskAssignedToUser(task, userId));
       setProjectTasks(nextTasks);
     } catch (error) {
       console.error('Error loading project tasks:', error);
@@ -167,6 +178,7 @@ export default function DesktopTimerDashboard() {
       if (!activeFromApi) {
         localStorage.removeItem(ACTIVE_TIMER_KEY);
       } else {
+        clearAutoStartArm(userId);
         clearAutoStartSuppression(userId);
         hasRestoredSnapshotRef.current = false;
       }
@@ -214,7 +226,10 @@ export default function DesktopTimerDashboard() {
   useEffect(() => {
     hasAttemptedAutoStartRef.current = false;
     hasRestoredSnapshotRef.current = false;
+    lastSyncedOvertimeKeyRef.current = '';
     setNotice('');
+    setFeedback(null);
+    setOvertimeStatus(null);
     setActiveTimer(null);
     setTodayEntries([]);
     setTodayTotal(0);
@@ -234,8 +249,42 @@ export default function DesktopTimerDashboard() {
   }, [userId]);
 
   useEffect(() => {
+    if (!userId) {
+      return;
+    }
+
+    const pendingNotice = consumeIdleAutoStopNotice(userId);
+    if (pendingNotice) {
+      setFeedback({ tone: 'error', message: pendingNotice });
+      setNotice('');
+      setActiveTimer(null);
+      localStorage.removeItem(ACTIVE_TIMER_KEY);
+      void fetchData();
+    }
+
+    const handleIdleAutoStop = (event: Event) => {
+      const detail = (event as CustomEvent<DesktopTimerIdleStopDetail>).detail;
+      if (!detail || detail.userId !== userId) {
+        return;
+      }
+
+      setFeedback({ tone: 'error', message: detail.message });
+      setNotice('');
+      setActiveTimer(null);
+      localStorage.removeItem(ACTIVE_TIMER_KEY);
+      void fetchData();
+    };
+
+    window.addEventListener(DESKTOP_TIMER_IDLE_STOP_EVENT, handleIdleAutoStop as EventListener);
+
+    return () => {
+      window.removeEventListener(DESKTOP_TIMER_IDLE_STOP_EVENT, handleIdleAutoStop as EventListener);
+    };
+  }, [userId]);
+
+  useEffect(() => {
     void loadProjectTasks(selectedProjectId);
-  }, [selectedProjectId]);
+  }, [selectedProjectId, userId]);
 
   useEffect(() => {
     if (!activeTimer) {
@@ -257,11 +306,17 @@ export default function DesktopTimerDashboard() {
     }
 
     if (activeTimer) {
+      clearAutoStartArm(userId);
       hasAttemptedAutoStartRef.current = true;
       return;
     }
 
-    if (hasAttemptedAutoStartRef.current || isStarting || isAutoStartSuppressed(userId)) {
+    if (
+      hasAttemptedAutoStartRef.current
+      || isStarting
+      || isAutoStartSuppressed(userId)
+      || !isAutoStartArmed(userId)
+    ) {
       return;
     }
 
@@ -272,6 +327,8 @@ export default function DesktopTimerDashboard() {
   const handleStartTimer = async (isAutoStart = false) => {
     setIsStarting(true);
     setNotice(isAutoStart ? 'Starting your timer automatically...' : '');
+    setFeedback(null);
+    clearIdleAutoStopNotice(userId);
     try {
       const startedAtIso = new Date().toISOString();
       const response = await timeEntryApi.start({
@@ -279,6 +336,7 @@ export default function DesktopTimerDashboard() {
         task_id: isAutoStart ? null : selectedTaskId,
         timer_slot: 'primary',
       });
+      clearAutoStartArm(userId);
       clearAutoStartSuppression(userId);
       syncTimerEntryLocally(response.data);
       setAttendanceToday((prev: any) => ({
@@ -405,7 +463,53 @@ export default function DesktopTimerDashboard() {
   );
   const remainingShiftSeconds = Math.max(0, shiftTargetSeconds - currentWorkedSeconds);
   const overtimeSeconds = Math.max(0, currentWorkedSeconds - shiftTargetSeconds);
-  const availableTasks = projectTasks.filter((task) => task.status !== 'done');
+  const overtimeMinutes = overtimeSeconds > 0 ? Math.ceil(overtimeSeconds / 60) : 0;
+  const attendanceDate = attendanceToday?.attendance_date || new Date().toISOString().split('T')[0];
+  const availableTasks = projectTasks.filter((task) => task.status !== 'done' && isTaskAssignedToUser(task, userId));
+
+  useEffect(() => {
+    if (!userId || overtimeMinutes <= 0) {
+      if (overtimeMinutes <= 0) {
+        lastSyncedOvertimeKeyRef.current = '';
+        setOvertimeStatus(null);
+      }
+      return;
+    }
+
+    const syncKey = `${userId}:${attendanceDate}:${overtimeMinutes}`;
+    if (lastSyncedOvertimeKeyRef.current === syncKey) {
+      return;
+    }
+
+    let cancelled = false;
+    setIsSubmittingOvertime(true);
+
+    attendanceTimeEditApi.create({
+      attendance_date: attendanceDate,
+      extra_minutes: overtimeMinutes,
+      worked_seconds: currentWorkedSeconds,
+      overtime_seconds: overtimeSeconds,
+      message: `Automatic overtime tracking from desktop timer. Overtime: ${formatDuration(overtimeSeconds)}.`,
+    }).then(() => {
+      if (cancelled) return;
+      lastSyncedOvertimeKeyRef.current = syncKey;
+      setOvertimeStatus({ tone: 'success', message: 'Overtime is being recorded automatically.' });
+    }).catch((error: any) => {
+      if (cancelled) return;
+      setOvertimeStatus({
+        tone: 'error',
+        message: error?.response?.data?.message || 'Failed to record overtime automatically.',
+      });
+    }).finally(() => {
+      if (!cancelled) {
+        setIsSubmittingOvertime(false);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [attendanceDate, currentWorkedSeconds, overtimeMinutes, overtimeSeconds, userId]);
 
   const submitOvertimeProof = async () => {
     if (overtimeSeconds <= 0) {
@@ -419,14 +523,18 @@ export default function DesktopTimerDashboard() {
       const todayDate = attendanceToday?.attendance_date || new Date().toISOString().split('T')[0];
       await attendanceTimeEditApi.create({
         attendance_date: todayDate,
-        extra_minutes: Math.ceil(overtimeSeconds / 60),
+        extra_minutes: overtimeMinutes,
         worked_seconds: currentWorkedSeconds,
         overtime_seconds: overtimeSeconds,
         message: `Auto overtime proof from dashboard timer. Overtime: ${formatDuration(overtimeSeconds)}.`,
       });
+      lastSyncedOvertimeKeyRef.current = `${userId}:${todayDate}:${overtimeMinutes}`;
+      setOvertimeStatus({ tone: 'success', message: 'Overtime is being recorded automatically.' });
       setNotice(`Overtime proof sent to admin. Worked: ${formatDuration(currentWorkedSeconds)}, Overtime: ${formatDuration(overtimeSeconds)}.`);
     } catch (error: any) {
-      setNotice(error?.response?.data?.message || 'Failed to submit overtime proof.');
+      const message = error?.response?.data?.message || 'Failed to submit overtime proof.';
+      setOvertimeStatus({ tone: 'error', message });
+      setNotice(message);
     } finally {
       setIsSubmittingOvertime(false);
     }
@@ -516,6 +624,18 @@ export default function DesktopTimerDashboard() {
           </div>
         </div>
 
+        {feedback ? (
+          <div className="mt-5">
+            <FeedbackBanner tone={feedback.tone} message={feedback.message} />
+          </div>
+        ) : null}
+
+        {overtimeStatus ? (
+          <div className="mt-5">
+            <FeedbackBanner tone={overtimeStatus.tone} message={overtimeStatus.message} />
+          </div>
+        ) : null}
+
         <div className="mt-5 grid grid-cols-1 gap-4 xl:grid-cols-2">
           <div className="rounded-[24px] border border-white/15 bg-white/10 p-4">
             <p className="text-xs uppercase tracking-[0.24em] text-cyan-100/70">
@@ -574,15 +694,17 @@ export default function DesktopTimerDashboard() {
           Total elapsed (all sessions): {formatDuration(allTimeTotal)} | Today's attendance worked: {formatDuration(currentWorkedSeconds)}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <Button
-            onClick={submitOvertimeProof}
-            disabled={isSubmittingOvertime || overtimeSeconds <= 0}
-            variant="secondary"
-            size="sm"
-            className="bg-white text-primary-700 hover:bg-sky-50"
-          >
-            {isSubmittingOvertime ? 'Sending...' : 'Send Overtime Proof to Admin'}
-          </Button>
+          {overtimeSeconds > 0 && overtimeStatus?.tone !== 'success' ? (
+            <Button
+              onClick={submitOvertimeProof}
+              disabled={isSubmittingOvertime || overtimeSeconds <= 0}
+              variant="secondary"
+              size="sm"
+              className="bg-white text-primary-700 hover:bg-sky-50"
+            >
+              {isSubmittingOvertime ? 'Syncing overtime...' : 'Send Overtime Proof to Admin'}
+            </Button>
+          ) : null}
           {notice ? <span className="text-xs text-cyan-50">{notice}</span> : null}
         </div>
       </div>

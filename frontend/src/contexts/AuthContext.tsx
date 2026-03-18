@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode, useRef } from 'react';
 import { User, Organization, OwnerSignupRequest } from '@/types';
-import { authApi, invitationApi } from '@/services/api';
+import { authApi, invitationApi, timeEntryApi } from '@/services/api';
+import { armAutoStart, clearDesktopTimerSession } from '@/lib/desktopTimerSession';
 import { apiUrl } from '@/lib/runtimeConfig';
 
 interface AuthContextType {
@@ -23,18 +24,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 // Demo mode - set to true to use mock data without backend
 const DEMO_MODE = false;
 const API_URL = apiUrl;
-const ACTIVE_TIMER_KEY = 'active_timer_snapshot';
-const AUTO_START_SUPPRESSED_KEY = 'desktop_timer_auto_start_suppressed';
-
-const clearDesktopTimerSession = () => {
-  localStorage.removeItem(ACTIVE_TIMER_KEY);
-
-  const suppressionKeys = Array.from({ length: sessionStorage.length }, (_, index) => sessionStorage.key(index))
-    .filter((key): key is string => Boolean(key))
-    .filter((key) => key === AUTO_START_SUPPRESSED_KEY || key.startsWith(`${AUTO_START_SUPPRESSED_KEY}:`));
-
-  suppressionKeys.forEach((key) => sessionStorage.removeItem(key));
-};
 
 const getResponseStatus = (error: unknown): number | null => {
   if (!error || typeof error !== 'object' || !('response' in error)) {
@@ -66,21 +55,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearStoredAuth();
   };
 
-  const storeAuthState = (nextToken: string, nextUser: User, nextOrganization?: Organization | null) => {
-    clearDesktopTimerSession();
-    setToken(nextToken);
-    setUser(nextUser);
-    setOrganization(nextOrganization ?? null);
+  const applyOrganizationState = (nextOrganization?: Organization | null) => {
+    const normalizedOrganization = nextOrganization ?? null;
+    setOrganization(normalizedOrganization);
 
-    sessionStorage.setItem('token', nextToken);
-    sessionStorage.setItem('user', JSON.stringify(nextUser));
-
-    if (nextOrganization) {
-      sessionStorage.setItem('organization', JSON.stringify(nextOrganization));
+    if (normalizedOrganization) {
+      sessionStorage.setItem('organization', JSON.stringify(normalizedOrganization));
       return;
     }
 
     sessionStorage.removeItem('organization');
+  };
+
+  const applyUserState = (nextUser: User, options?: { resetDesktopSession?: boolean }) => {
+    setUser(nextUser);
+    sessionStorage.setItem('user', JSON.stringify(nextUser));
+
+    if (options?.resetDesktopSession) {
+      clearDesktopTimerSession();
+    }
+
+    if (nextUser.role === 'employee') {
+      armAutoStart(nextUser.id);
+    }
+  };
+
+  const storeAuthState = (nextToken: string, nextUser: User, nextOrganization?: Organization | null) => {
+    setToken(nextToken);
+    sessionStorage.setItem('token', nextToken);
+    applyUserState(nextUser, { resetDesktopSession: true });
+    applyOrganizationState(nextOrganization);
   };
 
   const extractUserFromMeResponse = (payload: unknown): User | null => {
@@ -231,12 +235,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      setUser(nextUser);
-      sessionStorage.setItem('user', JSON.stringify(nextUser));
-      if (nextOrganization) {
-        setOrganization(nextOrganization);
-        sessionStorage.setItem('organization', JSON.stringify(nextOrganization));
-      }
+      applyUserState(nextUser);
+      applyOrganizationState(nextOrganization);
     } catch (error) {
       console.error('Failed to fetch user:', error);
       if (isActiveRef.current) {
@@ -246,11 +246,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const login = async (email: string, password: string) => {
+    const normalizedEmail = email.trim().toLowerCase();
+
     if (DEMO_MODE) {
       const demoUser: User = {
         id: 1,
-        name: email.split('@')[0],
-        email: email,
+        name: normalizedEmail.split('@')[0],
+        email: normalizedEmail,
         role: 'admin',
         organization_id: 1,
         is_active: true,
@@ -270,7 +272,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const response = await authApi.login({ email, password });
+    const response = await authApi.login({ email: normalizedEmail, password });
     const { user: userData, token: authToken, organization: org } = response.data;
 
     storeAuthState(authToken, userData, org);
@@ -337,6 +339,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
+    if (!DEMO_MODE && user?.role === 'employee') {
+      try {
+        await timeEntryApi.stop({ timer_slot: 'primary' });
+      } catch (error) {
+        const status = getResponseStatus(error);
+        if (status !== 404 && status !== 401 && status !== 403) {
+          console.error('Timer stop on logout error:', error);
+        }
+      }
+    }
+
     if (!DEMO_MODE) {
       try {
         await authApi.logout();

@@ -40,9 +40,16 @@ export default function Login() {
     e.preventDefault();
     setError('');
     setIsLoading(true);
+
+    const form = new FormData(e.currentTarget as HTMLFormElement);
+    const submittedEmail = String(form.get('email') || '').trim();
+    const submittedPassword = String(form.get('password') || '');
+
+    setEmail(submittedEmail);
+    setPassword(submittedPassword);
     
     try {
-      await login(email, password);
+      await login(submittedEmail, submittedPassword);
       navigate('/dashboard');
     } catch (err: any) {
       setError(extractLoginError(err));

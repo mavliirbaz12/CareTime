@@ -123,8 +123,16 @@ class ProjectController extends Controller
         }
 
         $tasks = $project->tasks()
-            ->with('assignee')
+            ->with('assignee', 'assignees')
             ->when($request->status, fn (Builder $q, string $status) => $q->where('status', $status))
+            ->when($request->filled('assignee_id'), function (Builder $query) use ($request) {
+                $assigneeId = (int) $request->assignee_id;
+
+                $query->where(function (Builder $nested) use ($assigneeId) {
+                    $nested->where('assignee_id', $assigneeId)
+                        ->orWhereHas('assignees', fn (Builder $assignees) => $assignees->where('users.id', $assigneeId));
+                });
+            })
             ->orderBy('created_at', 'desc')
             ->get();
 

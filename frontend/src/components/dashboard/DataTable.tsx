@@ -15,6 +15,8 @@ interface DataTableProps<T> {
   rows: T[];
   emptyMessage: string;
   headerAction?: ReactNode;
+  bodyClassName?: string;
+  stickyHeader?: boolean;
 }
 
 export default function DataTable<T>({
@@ -24,6 +26,8 @@ export default function DataTable<T>({
   rows,
   emptyMessage,
   headerAction,
+  bodyClassName,
+  stickyHeader = false,
 }: DataTableProps<T>) {
   return (
     <SurfaceCard className="overflow-hidden">
@@ -36,13 +40,13 @@ export default function DataTable<T>({
           {headerAction ? <div className="shrink-0">{headerAction}</div> : null}
         </div>
       </div>
-      <div className="overflow-x-auto">
+      <div className={`overflow-x-auto ${bodyClassName || ''}`.trim()}>
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-50/80">
+          <thead className={stickyHeader ? 'sticky top-0 z-10 bg-slate-50/95 backdrop-blur' : 'bg-slate-50/80'}>
             <tr>
               {columns.map((column) => (
                 <th
-                  key={column.key}
+                  key={`${column.key}:${column.header}`}
                   className={`whitespace-nowrap px-5 py-3 text-left text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 ${column.className || ''}`.trim()}
                 >
                   {column.header}
@@ -61,7 +65,7 @@ export default function DataTable<T>({
               rows.map((row, index) => (
                 <tr key={index} className="border-t border-slate-100/90">
                   {columns.map((column) => (
-                    <td key={column.key} className={`px-5 py-3 align-top text-slate-700 ${column.className || ''}`.trim()}>
+                    <td key={`${column.key}:${column.header}`} className={`px-5 py-3 align-top text-slate-700 ${column.className || ''}`.trim()}>
                       {column.render(row)}
                     </td>
                   ))}

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   activityApi,
@@ -17,6 +17,8 @@ import DataTable from '@/components/dashboard/DataTable';
 import Button from '@/components/ui/Button';
 import { FeedbackBanner, PageEmptyState, PageErrorState, PageLoadingState } from '@/components/ui/PageState';
 import { FieldLabel, SelectInput, TextInput } from '@/components/ui/FormField';
+import { downloadBlob, downloadCsv, extractApiErrorMessage } from '@/lib/downloads';
+import { buildProjectTaskSessionRows, buildProjectTaskSummaryRows, resolveTimeEntryDurationSeconds } from '@/lib/projectTaskReporting';
 import { getWorkingDuration } from '@/lib/timeBreakdown';
 import {
   Activity,
@@ -48,6 +50,16 @@ const formatDuration = (seconds: number) => {
   const hours = Math.floor(safe / 3600);
   const minutes = Math.floor((safe % 3600) / 60);
   return `${hours}h ${minutes}m`;
+};
+const formatReportTimestamp = (value?: string | null) => {
+  if (!value) return 'Not available';
+
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    return value;
+  }
+
+  return timestamp.toLocaleString();
 };
 const formatTimelineDuration = (seconds: number) => {
   const safe = Math.max(0, Math.floor(Number.isFinite(Number(seconds)) ? Number(seconds) : 0));
@@ -147,6 +159,8 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
   const [query, setQuery] = useState('');
   const [selectedUserId, setSelectedUserId] = useState<number | ''>('');
   const [selectedGroupId, setSelectedGroupId] = useState<number | ''>('');
+  const [selectedProjectId, setSelectedProjectId] = useState<number | ''>('');
+  const [selectedTaskId, setSelectedTaskId] = useState<number | ''>('');
   const [exportMessage, setExportMessage] = useState('');
   const [exportError, setExportError] = useState('');
 
@@ -194,6 +208,7 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
         const response = await reportApi.attendance({
           start_date: startDate,
           end_date: endDate,
+          group_ids: selectedGroupId ? [Number(selectedGroupId)] : undefined,
           q: remoteSearch || undefined,
         });
         return response.data;
@@ -280,15 +295,82 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
   const projectsById = useMemo(() => new Map<number, any>(projects.map((project: any) => [Number(project.id), project])), [projects]);
   const tasksById = useMemo(() => new Map<number, any>(tasks.map((task: any) => [Number(task.id), task])), [tasks]);
   const usersById = useMemo(() => new Map<number, any>(users.map((user: any) => [Number(user.id), user])), [users]);
-  const filteredTasks = useMemo(() => {
+  const scopedProjectTimeEntries = useMemo(() => {
+    if (mode !== 'projects-tasks') return [];
+
+    return projectTimeEntries.filter((entry: any) => {
+      const projectId = Number(entry.project_id);
+      if (!projectId) return false;
+
+      return !hasProjectsTasksScope || scopedUserIdSet.has(Number(entry.user_id));
+    });
+  }, [hasProjectsTasksScope, mode, projectTimeEntries, scopedUserIdSet]);
+  const scopedTaskIdsFromEntries = useMemo(
+    () => new Set(scopedProjectTimeEntries.map((entry: any) => Number(entry.task_id)).filter((taskId: number) => Number.isFinite(taskId) && taskId > 0)),
+    [scopedProjectTimeEntries]
+  );
+  const scopedTasks = useMemo(() => {
     if (mode !== 'projects-tasks') return [];
 
     return tasks.filter((task: any) => {
+      if (!hasProjectsTasksScope) {
+        return true;
+      }
+
+      const assigneeId = Number(task.assignee_id);
+      return (Number.isFinite(assigneeId) && scopedUserIdSet.has(assigneeId)) || scopedTaskIdsFromEntries.has(Number(task.id));
+    });
+  }, [hasProjectsTasksScope, mode, scopedTaskIdsFromEntries, scopedUserIdSet, tasks]);
+  const scopedProjectIds = useMemo(
+    () => new Set([
+      ...scopedTasks.map((task: any) => Number(task.project_id)),
+      ...scopedProjectTimeEntries.map((entry: any) => Number(entry.project_id)),
+    ].filter((projectId) => Number.isFinite(projectId) && projectId > 0)),
+    [scopedProjectTimeEntries, scopedTasks]
+  );
+  const projectFilterOptions = useMemo(() => {
+    if (mode !== 'projects-tasks') return [];
+
+    return projects
+      .filter((project: any) => !hasProjectsTasksScope || scopedProjectIds.has(Number(project.id)))
+      .sort((left: any, right: any) => String(left.name || '').localeCompare(String(right.name || '')));
+  }, [hasProjectsTasksScope, mode, projects, scopedProjectIds]);
+  const taskFilterOptions = useMemo(() => {
+    if (mode !== 'projects-tasks') return [];
+
+    return scopedTasks
+      .filter((task: any) => !selectedProjectId || Number(task.project_id) === Number(selectedProjectId))
+      .sort((left: any, right: any) => String(left.title || '').localeCompare(String(right.title || '')));
+  }, [mode, scopedTasks, selectedProjectId]);
+
+  useEffect(() => {
+    if (selectedProjectId && !projectFilterOptions.some((project: any) => Number(project.id) === Number(selectedProjectId))) {
+      setSelectedProjectId('');
+    }
+  }, [projectFilterOptions, selectedProjectId]);
+
+  useEffect(() => {
+    if (selectedTaskId && !taskFilterOptions.some((task: any) => Number(task.id) === Number(selectedTaskId))) {
+      setSelectedTaskId('');
+    }
+  }, [selectedTaskId, taskFilterOptions]);
+
+  const filteredTasks = useMemo(() => {
+    if (mode !== 'projects-tasks') return [];
+
+    return scopedTasks.filter((task: any) => {
       const project = projectsById.get(Number(task.project_id));
       const assignee = usersById.get(Number(task.assignee_id));
-      const matchesScope = !hasProjectsTasksScope || (task.assignee_id ? scopedUserIdSet.has(Number(task.assignee_id)) : false);
 
-      return matchesScope && matchesWorkspaceSearch(projectsTasksSearch, [
+      if (selectedProjectId && Number(task.project_id) !== Number(selectedProjectId)) {
+        return false;
+      }
+
+      if (selectedTaskId && Number(task.id) !== Number(selectedTaskId)) {
+        return false;
+      }
+
+      return matchesWorkspaceSearch(projectsTasksSearch, [
         task.title,
         task.description,
         task.status,
@@ -297,47 +379,59 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
         assignee?.name,
       ]);
     });
-  }, [hasProjectsTasksScope, mode, projectsById, projectsTasksSearch, scopedUserIdSet, tasks, usersById]);
+  }, [mode, projectsById, projectsTasksSearch, scopedTasks, selectedProjectId, selectedTaskId, usersById]);
   const filteredProjectTimeEntries = useMemo(() => {
     if (mode !== 'projects-tasks') return [];
 
-    return projectTimeEntries.filter((entry: any) => {
+    return scopedProjectTimeEntries.filter((entry: any) => {
       const projectId = Number(entry.project_id);
       if (!projectId) return false;
+
+      if (selectedProjectId && projectId !== Number(selectedProjectId)) {
+        return false;
+      }
+
+      if (selectedTaskId && Number(entry.task_id) !== Number(selectedTaskId)) {
+        return false;
+      }
 
       const project = projectsById.get(projectId);
       const task = tasksById.get(Number(entry.task_id));
       const user = usersById.get(Number(entry.user_id));
-      const matchesScope = !hasProjectsTasksScope || scopedUserIdSet.has(Number(entry.user_id));
 
-      return matchesScope && matchesWorkspaceSearch(projectsTasksSearch, [
+      return matchesWorkspaceSearch(projectsTasksSearch, [
         project?.name,
         project?.description,
         task?.title,
+        task?.status,
         user?.name,
+        user?.email,
         entry.description,
       ]);
     });
-  }, [hasProjectsTasksScope, mode, projectTimeEntries, projectsById, projectsTasksSearch, scopedUserIdSet, tasksById, usersById]);
+  }, [mode, projectsById, projectsTasksSearch, scopedProjectTimeEntries, selectedProjectId, selectedTaskId, tasksById, usersById]);
   const filteredProjectIds = useMemo(() => new Set([
     ...filteredTasks.map((task: any) => Number(task.project_id)),
     ...filteredProjectTimeEntries.map((entry: any) => Number(entry.project_id)),
   ]), [filteredProjectTimeEntries, filteredTasks]);
   const filteredProjects = useMemo(() => {
     if (mode !== 'projects-tasks') return [];
-    if (!hasProjectsTasksScope && !projectsTasksSearch) return projects;
+    if (selectedProjectId) {
+      return projects.filter((project: any) => Number(project.id) === Number(selectedProjectId));
+    }
+    if (!hasProjectsTasksScope && !projectsTasksSearch && !selectedTaskId) return projects;
 
     return projects.filter((project: any) => {
       const projectId = Number(project.id);
       const matchesSearch = matchesWorkspaceSearch(projectsTasksSearch, [project.name, project.description, project.status]);
 
-      if (hasProjectsTasksScope) {
+      if (hasProjectsTasksScope || selectedTaskId) {
         return filteredProjectIds.has(projectId);
       }
 
       return filteredProjectIds.has(projectId) || matchesSearch;
     });
-  }, [filteredProjectIds, hasProjectsTasksScope, mode, projects, projectsTasksSearch]);
+  }, [filteredProjectIds, hasProjectsTasksScope, mode, projects, projectsTasksSearch, selectedProjectId, selectedTaskId]);
 
   const projectRows = useMemo(() => {
     if (mode !== 'projects-tasks') return [];
@@ -345,7 +439,7 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
       const projectTasks = filteredTasks.filter((task: any) => Number(task.project_id) === Number(project.id));
       const trackedSeconds = filteredProjectTimeEntries
         .filter((entry: any) => Number(entry.project_id) === Number(project.id))
-        .reduce((sum: number, entry: any) => sum + Number(entry.duration || 0), 0);
+        .reduce((sum: number, entry: any) => sum + resolveTimeEntryDurationSeconds(entry), 0);
 
       return {
         ...project,
@@ -355,6 +449,32 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
       };
     });
   }, [filteredProjectTimeEntries, filteredProjects, filteredTasks, mode]);
+  const projectTaskSummaryRows = useMemo(() => {
+    if (mode !== 'projects-tasks') return [];
+
+    return buildProjectTaskSummaryRows(filteredProjectTimeEntries, {
+      projectsById,
+      tasksById,
+      usersById,
+    });
+  }, [filteredProjectTimeEntries, mode, projectsById, tasksById, usersById]);
+  const projectTaskTrackedSeconds = useMemo(
+    () => projectTaskSummaryRows.reduce((sum: number, row: any) => sum + Number(row.tracked_seconds || 0), 0),
+    [projectTaskSummaryRows]
+  );
+  const projectTaskSessionRows = useMemo(() => {
+    if (mode !== 'projects-tasks') return [];
+
+    return buildProjectTaskSessionRows(filteredProjectTimeEntries, {
+      projectsById,
+      tasksById,
+      usersById,
+    });
+  }, [filteredProjectTimeEntries, mode, projectsById, tasksById, usersById]);
+  const projectTaskContributorCount = useMemo(
+    () => new Set(projectTaskSummaryRows.map((row: any) => Number(row.user_id)).filter((userId: number) => Number.isFinite(userId) && userId > 0)).size,
+    [projectTaskSummaryRows]
+  );
 
   const timelineRows = (dataQuery.data as any[]) || [];
   const timelineSummary = useMemo(() => {
@@ -383,6 +503,47 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
   const handleExport = async () => {
     setExportMessage('');
     setExportError('');
+
+    if (mode === 'projects-tasks') {
+      downloadCsv(
+        [
+          ['Project & Task Summary'],
+          ['Employee', 'Employee Email', 'Project', 'Project Status', 'Task', 'Task Status', 'Entries Count', 'Tracked Seconds', 'Tracked Time', 'First Start Time', 'Last End Time'],
+          ...projectTaskSummaryRows.map((row: any) => ([
+            row.user_name,
+            row.user_email,
+            row.project_name,
+            row.project_status || 'Unknown',
+            row.task_title,
+            row.task_status || 'Unknown',
+            row.entries_count,
+            row.tracked_seconds,
+            formatDuration(row.tracked_seconds || 0),
+            formatReportTimestamp(row.first_start_time),
+            formatReportTimestamp(row.last_end_time),
+          ])),
+          [],
+          ['Project & Task Sessions'],
+          ['Employee', 'Employee Email', 'Project', 'Project Status', 'Task', 'Task Status', 'Session Start Time', 'Session End Time', 'Tracked Seconds', 'Tracked Time'],
+          ...projectTaskSessionRows.map((row: any) => ([
+            row.user_name,
+            row.user_email,
+            row.project_name,
+            row.project_status || 'Unknown',
+            row.task_title,
+            row.task_status || 'Unknown',
+            formatReportTimestamp(row.session_start_time),
+            formatReportTimestamp(row.session_end_time),
+            row.tracked_seconds,
+            formatDuration(row.tracked_seconds || 0),
+          ])),
+        ],
+        `report-${mode}-${startDate}-to-${endDate}.csv`
+      );
+      setExportMessage('Export completed.');
+      return;
+    }
+
     try {
       const response = await reportApi.export({
         start_date: startDate,
@@ -390,17 +551,10 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
         user_ids: selectedUserId ? [Number(selectedUserId)] : undefined,
         group_ids: selectedGroupId ? [Number(selectedGroupId)] : undefined,
       });
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `report-${mode}-${startDate}-to-${endDate}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      downloadBlob(response.data, `report-${mode}-${startDate}-to-${endDate}.csv`, 'text/csv');
       setExportMessage('Export completed.');
     } catch (error: any) {
-      setExportError(error?.response?.data?.message || 'Failed to export report.');
+      setExportError(await extractApiErrorMessage(error, 'Failed to export report.'));
     }
   };
 
@@ -463,7 +617,13 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
           <TextInput
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={mode === 'attendance' || mode === 'web-app-usage' ? 'Name or email' : 'Optional filter'}
+            placeholder={
+              mode === 'attendance' || mode === 'web-app-usage'
+                ? 'Name or email'
+                : mode === 'projects-tasks'
+                  ? 'Project, task, employee, or description'
+                  : 'Optional filter'
+            }
           />
         </div>
         <div>
@@ -489,6 +649,33 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
           </SelectInput>
         </div>
       </FilterPanel>
+
+      {mode === 'projects-tasks' ? (
+        <FilterPanel className="grid grid-cols-1 gap-3 md:grid-cols-2">
+          <div>
+            <FieldLabel>Project</FieldLabel>
+            <SelectInput value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value ? Number(event.target.value) : '')}>
+              <option value="">All projects</option>
+              {projectFilterOptions.map((project: any) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </SelectInput>
+          </div>
+          <div>
+            <FieldLabel>Task</FieldLabel>
+            <SelectInput value={selectedTaskId} onChange={(event) => setSelectedTaskId(event.target.value ? Number(event.target.value) : '')}>
+              <option value="">All tasks</option>
+              {taskFilterOptions.map((task: any) => (
+                <option key={task.id} value={task.id}>
+                  {task.title}
+                </option>
+              ))}
+            </SelectInput>
+          </div>
+        </FilterPanel>
+      ) : null}
 
       {mode === 'attendance' && attendanceTotals ? (
         <>
@@ -584,8 +771,8 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
             <MetricCard label="Projects" value={filteredProjects.length} hint="Projects in scope" icon={FolderKanban} accent="sky" />
             <MetricCard label="Tasks" value={filteredTasks.length} hint="Tasks in scope" icon={ListFilter} accent="violet" />
-            <MetricCard label="Open Tasks" value={filteredTasks.filter((task: any) => task.status !== 'done').length} hint="Todo and in-progress tasks" icon={Waypoints} accent="amber" />
-            <MetricCard label="Tracked Time" value={formatDuration(filteredProjectTimeEntries.reduce((sum: number, entry: any) => sum + Number(entry.duration || 0), 0))} hint="Project-linked time in scope" icon={TimerReset} accent="emerald" />
+            <MetricCard label="Contributors" value={projectTaskContributorCount} hint="Employees with tracked project time" icon={Users} accent="amber" />
+            <MetricCard label="Tracked Time" value={formatDuration(projectTaskTrackedSeconds)} hint="Project-linked time in scope" icon={TimerReset} accent="emerald" />
           </div>
 
           <DataTable
@@ -599,6 +786,48 @@ export default function ReportsWorkspace({ mode }: { mode: ReportsWorkspaceMode 
               { key: 'status', header: 'Status', render: (row: any) => row.status },
               { key: 'tasks', header: 'Tasks', render: (row: any) => row.task_count },
               { key: 'open_tasks', header: 'Open', render: (row: any) => row.open_tasks },
+              { key: 'tracked', header: 'Tracked', render: (row: any) => formatDuration(row.tracked_seconds || 0) },
+            ]}
+          />
+
+          <DataTable
+            title="Employee Time by Project & Task"
+            description="Use employee, project, and task filters to see who spent how much time on each work item."
+            rows={projectTaskSummaryRows}
+            emptyMessage="No tracked project time found for the selected filters."
+            headerAction={renderPanelRefreshButton()}
+            columns={[
+              {
+                key: 'employee',
+                header: 'Employee',
+                render: (row: any) => (
+                  <div>
+                    <p className="font-medium text-slate-950">{row.user_name}</p>
+                    <p className="text-xs text-slate-500">{row.user_email || 'No email'}</p>
+                  </div>
+                ),
+              },
+              {
+                key: 'project',
+                header: 'Project',
+                render: (row: any) => (
+                  <div>
+                    <p className="font-medium text-slate-950">{row.project_name}</p>
+                    <p className="text-xs text-slate-500">{row.project_status || 'Unknown status'}</p>
+                  </div>
+                ),
+              },
+              {
+                key: 'task',
+                header: 'Task',
+                render: (row: any) => (
+                  <div>
+                    <p className="font-medium text-slate-950">{row.task_title}</p>
+                    <p className="text-xs text-slate-500">{row.task_status || 'Unknown status'}</p>
+                  </div>
+                ),
+              },
+              { key: 'entries', header: 'Entries', render: (row: any) => row.entries_count },
               { key: 'tracked', header: 'Tracked', render: (row: any) => formatDuration(row.tracked_seconds || 0) },
             ]}
           />

@@ -68,23 +68,25 @@ class AttendanceTimeEditRequestController extends Controller
         $date = Carbon::parse($request->attendance_date)->toDateString();
         $extraSeconds = (int) $request->extra_minutes * 60;
 
-        $hasPending = AttendanceTimeEditRequest::where('organization_id', $currentUser->organization_id)
+        $existingPending = AttendanceTimeEditRequest::where('organization_id', $currentUser->organization_id)
             ->where('user_id', $currentUser->id)
             ->whereDate('attendance_date', $date)
             ->where('status', 'pending')
-            ->exists();
-        if ($hasPending) {
-            return response()->json(['message' => 'A pending time edit request already exists for this date.'], 422);
-        }
+            ->first();
 
-        $created = AttendanceTimeEditRequest::create([
-            'organization_id' => $currentUser->organization_id,
-            'user_id' => $currentUser->id,
-            'attendance_date' => $date,
-            'extra_seconds' => $extraSeconds,
-            'message' => $request->message,
-            'status' => 'pending',
-        ]);
+        $created = $existingPending
+            ? tap($existingPending)->update([
+                'extra_seconds' => $extraSeconds,
+                'message' => $request->message,
+            ])
+            : AttendanceTimeEditRequest::create([
+                'organization_id' => $currentUser->organization_id,
+                'user_id' => $currentUser->id,
+                'attendance_date' => $date,
+                'extra_seconds' => $extraSeconds,
+                'message' => $request->message,
+                'status' => 'pending',
+            ]);
 
         $record = AttendanceRecord::query()
             ->where('organization_id', $currentUser->organization_id)
@@ -105,32 +107,52 @@ class AttendanceTimeEditRequestController extends Controller
             ->where('id', '!=', $currentUser->id)
             ->pluck('id');
 
-        $this->notificationService->sendToUsers(
-            organizationId: (int) $currentUser->organization_id,
-            userIds: $adminRecipientIds,
-            senderId: (int) $currentUser->id,
-            type: 'announcement',
-            title: 'Time Edit Request Submitted',
-            message: sprintf(
-                '%s submitted a time edit request for %s. Worked: %s, Requested overtime: %s.',
-                (string) $currentUser->name,
-                $date,
-                $this->formatDuration($workedSeconds),
-                $this->formatDuration($overtimeSeconds)
-            ),
-            meta: [
-                'request_id' => $created->id,
-                'employee_id' => (int) $currentUser->id,
-                'employee_name' => (string) $currentUser->name,
-                'attendance_date' => $date,
-                'worked_seconds' => $workedSeconds,
-                'overtime_seconds' => $overtimeSeconds,
-                'extra_seconds' => $extraSeconds,
-            ]
-        );
+        if (! $existingPending) {
+            $this->notificationService->sendToUsers(
+                organizationId: (int) $currentUser->organization_id,
+                userIds: $adminRecipientIds,
+                senderId: (int) $currentUser->id,
+                type: 'announcement',
+                title: 'Time Edit Request Submitted',
+                message: sprintf(
+                    '%s submitted a time edit request for %s. Worked: %s, Requested overtime: %s.',
+                    (string) $currentUser->name,
+                    $date,
+                    $this->formatDuration($workedSeconds),
+                    $this->formatDuration($overtimeSeconds)
+                ),
+                meta: [
+                    'request_id' => $created->id,
+                    'employee_id' => (int) $currentUser->id,
+                    'employee_name' => (string) $currentUser->name,
+                    'attendance_date' => $date,
+                    'worked_seconds' => $workedSeconds,
+                    'overtime_seconds' => $overtimeSeconds,
+                    'extra_seconds' => $extraSeconds,
+                ]
+            );
+
+            $this->auditLogService->log(
+                action: 'attendance.time_edit_requested',
+                actor: $currentUser,
+                target: $created,
+                metadata: [
+                    'attendance_date' => $date,
+                    'extra_minutes' => (int) $request->extra_minutes,
+                    'worked_seconds' => $workedSeconds,
+                    'overtime_seconds' => $overtimeSeconds,
+                ],
+                request: $request
+            );
+
+            return response()->json([
+                'message' => 'Time edit request submitted.',
+                'data' => $created->load(['user:id,name,email,role', 'reviewer:id,name,email']),
+            ], 201);
+        }
 
         $this->auditLogService->log(
-            action: 'attendance.time_edit_requested',
+            action: 'attendance.time_edit_updated',
             actor: $currentUser,
             target: $created,
             metadata: [
@@ -143,9 +165,9 @@ class AttendanceTimeEditRequestController extends Controller
         );
 
         return response()->json([
-            'message' => 'Time edit request submitted.',
-            'data' => $created->load(['user:id,name,email,role', 'reviewer:id,name,email']),
-        ], 201);
+            'message' => 'Time edit request updated.',
+            'data' => $created->fresh()->load(['user:id,name,email,role', 'reviewer:id,name,email']),
+        ]);
     }
 
     public function approve(Request $request, int $id)

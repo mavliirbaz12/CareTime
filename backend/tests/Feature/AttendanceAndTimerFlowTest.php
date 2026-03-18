@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Mail\IdleTimerStoppedMail;
 use App\Models\AttendancePunch;
 use App\Models\AttendanceRecord;
 use App\Models\Organization;
@@ -9,6 +10,7 @@ use App\Models\TimeEntry;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Mail;
 use Tests\TestCase;
 
 class AttendanceAndTimerFlowTest extends TestCase
@@ -114,5 +116,107 @@ class AttendanceAndTimerFlowTest extends TestCase
             'id' => $entry->id,
             'end_time' => null,
         ]);
+    }
+
+    public function test_idle_auto_stop_stop_request_sends_email_to_employee(): void
+    {
+        Mail::fake();
+
+        $organization = Organization::create(['name' => 'Org', 'slug' => 'org']);
+        $user = User::create([
+            'name' => 'Employee',
+            'email' => 'timer@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'employee',
+            'organization_id' => $organization->id,
+        ]);
+
+        $headers = $this->apiHeadersFor($user);
+
+        $this->postJson('/api/time-entries/start', [
+            'description' => 'Primary timer',
+            'timer_slot' => 'primary',
+        ], $headers)->assertCreated();
+
+        $this->postJson('/api/time-entries/stop', [
+            'timer_slot' => 'primary',
+            'auto_stopped_for_idle' => true,
+            'idle_seconds' => 10,
+        ], $headers)->assertOk();
+
+        Mail::assertSent(IdleTimerStoppedMail::class, function (IdleTimerStoppedMail $mail) use ($user) {
+            return $mail->hasTo($user->email)
+                && $mail->idleSeconds === 10
+                && $mail->userName === 'Employee';
+        });
+    }
+
+    public function test_attendance_summary_includes_timer_window_fields_for_admin_review(): void
+    {
+        $organization = Organization::create(['name' => 'Org', 'slug' => 'org']);
+        $admin = User::create([
+            'name' => 'Admin',
+            'email' => 'admin@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'admin',
+            'organization_id' => $organization->id,
+        ]);
+        $employee = User::create([
+            'name' => 'Employee',
+            'email' => 'employee@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'employee',
+            'organization_id' => $organization->id,
+        ]);
+
+        TimeEntry::create([
+            'user_id' => $employee->id,
+            'start_time' => '2026-03-18 09:00:00',
+            'end_time' => null,
+            'duration' => 0,
+            'timer_slot' => 'primary',
+        ]);
+
+        $this->getJson('/api/attendance/summary?start_date=2026-03-18&end_date=2026-03-18&q=employee', $this->apiHeadersFor($admin))
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.user.id', $employee->id)
+            ->assertJsonPath('data.0.first_timer_start', '2026-03-18T09:00:00.000000Z')
+            ->assertJsonPath('data.0.last_timer_end', null)
+            ->assertJsonPath('data.0.is_timer_running', true);
+    }
+
+    public function test_time_entry_update_rejects_ranges_that_conflict_with_existing_times(): void
+    {
+        $organization = Organization::create(['name' => 'Org', 'slug' => 'org']);
+        $user = User::create([
+            'name' => 'Employee',
+            'email' => 'employee@example.com',
+            'password' => Hash::make('password123'),
+            'role' => 'employee',
+            'organization_id' => $organization->id,
+        ]);
+
+        $timeEntry = TimeEntry::create([
+            'user_id' => $user->id,
+            'start_time' => '2026-03-18 09:00:00',
+            'end_time' => '2026-03-18 10:00:00',
+            'duration' => 3600,
+            'timer_slot' => 'primary',
+        ]);
+
+        $headers = $this->apiHeadersFor($user);
+
+        $this->putJson("/api/time-entries/{$timeEntry->id}", [
+            'end_time' => '2026-03-18 08:30:00',
+        ], $headers)
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'End time must be after start time.');
+
+        $this->putJson("/api/time-entries/{$timeEntry->id}", [
+            'start_time' => '2026-03-18 10:30:00',
+        ], $headers)
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'End time must be after start time.');
     }
 }

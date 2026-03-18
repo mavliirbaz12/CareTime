@@ -496,13 +496,17 @@ class ReportController extends Controller
             [$startDate, $endDate] = [$endDate->copy()->startOfDay(), $startDate->copy()->endOfDay()];
         }
 
-        $entriesQuery = TimeEntry::with(['project', 'task', 'user'])
+        $entriesQuery = TimeEntry::query()
+            ->with(['project:id,name', 'task:id,title', 'user:id,name'])
             ->whereBetween('start_time', [$startDate, $endDate]);
 
         if ($this->canViewAll($user) && $user->organization_id) {
             $organizationUserIds = User::query()
                 ->where('organization_id', $user->organization_id)
-                ->pluck('id');
+                ->pluck('id')
+                ->map(fn ($id) => (int) $id)
+                ->filter(fn ($id) => $id > 0)
+                ->values();
 
             $selectedUserIds = collect($request->input('user_ids', []))
                 ->map(fn ($id) => (int) $id)
@@ -533,40 +537,50 @@ class ReportController extends Controller
                 }
             }
 
-            $entriesQuery->whereIn(
-                'user_id',
-                $selectedUserIds->isNotEmpty() ? $selectedUserIds : $organizationUserIds
-            );
+            $scopedUserIds = $selectedUserIds->isNotEmpty()
+                ? $selectedUserIds->intersect($organizationUserIds)->values()
+                : $organizationUserIds->values();
+
+            if ($scopedUserIds->isEmpty()) {
+                $entriesQuery->whereRaw('1 = 0');
+            } else {
+                $entriesQuery->whereIn('user_id', $scopedUserIds);
+            }
         } else {
             $entriesQuery->where('user_id', $user->id);
         }
 
-        $entries = $entriesQuery
-            ->orderBy('start_time')
-            ->get();
-
-        $lines = [
-            'Date,Employee,Project,Task,Description,Duration (seconds),Billable',
-        ];
-
-        foreach ($entries as $entry) {
-            $lines[] = implode(',', [
-                Carbon::parse($entry->start_time)->toDateString(),
-                $this->csvValue($entry->user?->name ?? 'Unknown User'),
-                $this->csvValue($entry->project?->name ?? 'No Project'),
-                $this->csvValue($entry->task?->title ?? ''),
-                $this->csvValue($entry->description ?? ''),
-                $entry->duration,
-                $entry->billable ? 'Yes' : 'No',
-            ]);
-        }
-
-        $csv = implode("\n", $lines);
         $fileName = 'report-'.$startDate->toDateString().'-to-'.$endDate->toDateString().'.csv';
 
-        return response($csv, 200, [
+        return response()->streamDownload(function () use ($entriesQuery) {
+            $handle = fopen('php://output', 'w');
+            if ($handle === false) {
+                return;
+            }
+
+            fputcsv($handle, ['Date', 'Employee', 'Project', 'Task', 'Description', 'Duration (seconds)', 'Billable']);
+            $resolvedNow = now();
+
+            $entriesQuery
+                ->orderBy('start_time')
+                ->orderBy('id')
+                ->chunk(500, function ($entries) use ($handle, $resolvedNow) {
+                    foreach ($entries as $entry) {
+                        fputcsv($handle, [
+                            Carbon::parse($entry->start_time)->toDateString(),
+                            $entry->user?->name ?? 'Unknown User',
+                            $entry->project?->name ?? 'No Project',
+                            $entry->task?->title ?? '',
+                            $entry->description ?? '',
+                            $this->timeEntryDurationService->effectiveDuration($entry, $resolvedNow),
+                            $entry->billable ? 'Yes' : 'No',
+                        ]);
+                    }
+                });
+
+            fclose($handle);
+        }, $fileName, [
             'Content-Type' => 'text/csv',
-            'Content-Disposition' => 'attachment; filename="'.$fileName.'"',
         ]);
     }
 
@@ -605,6 +619,19 @@ class ReportController extends Controller
         if (!$this->canViewAll($currentUser)) {
             $usersQuery->where('id', $currentUser->id);
         } else {
+            $selectedGroupIds = collect($request->input('group_ids', []))
+                ->map(fn ($id) => (int) $id)
+                ->filter(fn ($id) => $id > 0)
+                ->unique()
+                ->values();
+
+            if ($selectedGroupIds->isNotEmpty()) {
+                $usersQuery->whereHas('reportGroups', function ($query) use ($currentUser, $selectedGroupIds) {
+                    $query->where('report_groups.organization_id', $currentUser->organization_id)
+                        ->whereIn('report_groups.id', $selectedGroupIds);
+                });
+            }
+
             if ($request->filled('user_id')) {
                 $usersQuery->where('id', (int) $request->user_id);
             }
@@ -1141,11 +1168,5 @@ class ReportController extends Controller
             ],
             'recent_screenshots' => $recentScreenshots,
         ]);
-    }
-
-    private function csvValue(string $value): string
-    {
-        $escaped = str_replace('"', '""', $value);
-        return '"'.$escaped.'"';
     }
 }

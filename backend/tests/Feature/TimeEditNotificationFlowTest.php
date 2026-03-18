@@ -106,4 +106,43 @@ class TimeEditNotificationFlowTest extends TestCase
         $this->assertStringContainsString('Your time edit request for', $notification->message);
         $this->assertStringNotContainsString('submitted a time edit request', $notification->message);
     }
+
+    public function test_submitting_overtime_again_updates_existing_pending_request_for_the_same_day(): void
+    {
+        $organization = Organization::create(['name' => 'Org', 'slug' => 'org']);
+        $employee = User::create([
+            'name' => 'Employee',
+            'email' => 'employee@org.test',
+            'password' => Hash::make('password123'),
+            'role' => 'employee',
+            'organization_id' => $organization->id,
+        ]);
+
+        $date = now()->toDateString();
+
+        $firstResponse = $this->postJson('/api/attendance-time-edit-requests', [
+            'attendance_date' => $date,
+            'extra_minutes' => 30,
+            'message' => 'Initial overtime capture',
+        ], $this->apiHeadersFor($employee))->assertCreated();
+
+        $requestId = (int) $firstResponse->json('data.id');
+
+        $this->postJson('/api/attendance-time-edit-requests', [
+            'attendance_date' => $date,
+            'extra_minutes' => 90,
+            'message' => 'Updated overtime capture',
+        ], $this->apiHeadersFor($employee))
+            ->assertOk()
+            ->assertJsonPath('message', 'Time edit request updated.')
+            ->assertJsonPath('data.id', $requestId);
+
+        $this->assertDatabaseCount('attendance_time_edit_requests', 1);
+        $this->assertDatabaseHas('attendance_time_edit_requests', [
+            'id' => $requestId,
+            'extra_seconds' => 5400,
+            'message' => 'Updated overtime capture',
+            'status' => 'pending',
+        ]);
+    }
 }
